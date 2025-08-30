@@ -1,0 +1,5 @@
+from qoder import Qoder
+
+if __name__ == "__main__":
+    app = Qoder()
+    app.run()
