@@ -1,0 +1,75 @@
+Goal: Fix Telegram /ping not responding by ensuring a token-agnostic webhook route, correct webhook registration, and built-in diagnostics for stable inbound messages.
+
+Actions:
+1. In server.py (FastAPI root), ensure this structure:
+
+from fastapi import FastAPI, Request
+import os, json, time, requests
+from queue import Queue
+from threading import Thread
+from common.telegram import send_message
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID   = os.environ.get("CHAT_ID_DEFAULT", "")
+TASK_Q = Queue()
+app = FastAPI()
+
+# Worker thread
+def worker():
+    while True:
+        task = TASK_Q.get()
+        print("Worker running:", task)
+        TASK_Q.task_done()
+
+Thread(target=worker, daemon=True).start()
+
+@app.post("/api/v1/telegram/{token}")
+async def telegram_webhook(token: str, request: Request):
+    if token != BOT_TOKEN:
+        return {"ok": True, "ignored": True}
+    update = await request.json()
+    print("INBOUND", time.time(), json.dumps(update)[:800])
+    msg = update.get("message") or {}
+    text = (msg.get("text") or "").strip()
+    chat_id = msg.get("chat", {}).get("id") or CHAT_ID
+    if text.startswith("/ping"):
+        send_message(chat_id, "✅ Direct test pong")
+    elif text.startswith("/status"):
+        send_message(chat_id, f"📊 System OK | Queue: {TASK_Q.qsize()}")
+    elif text.startswith("/build"):
+        TASK_Q.put({"type": "build", "payload": text[6:].strip()})
+        send_message(chat_id, "🛠️ Queued build task")
+    return {"ok": True}
+
+@app.get("/api/v1/health")
+def health():
+    return {"ok": True, "queue_depth": TASK_Q.qsize(), "time": time.time()}
+
+@app.get("/api/v1/telegram/info")
+def tg_info():
+    BOT = os.environ["TELEGRAM_BOT_TOKEN"]
+    return requests.get(f"https://api.telegram.org/bot{BOT}/getWebhookInfo").json()
+
+2. Add a reset script: /tools/reset_webhook.py
+
+import os, requests
+BOT = os.environ["TELEGRAM_BOT_TOKEN"]
+URL = f"https://<YOUR-REPL-NAME>.repl.co/api/v1/telegram/{BOT}"
+BASE = f"https://api.telegram.org/bot{BOT}"
+print("Delete:", requests.get(f"{BASE}/deleteWebhook").json())
+print("Set:", requests.get(f"{BASE}/setWebhook", params={"url": URL}).json())
+print("Info:", requests.get(f"{BASE}/getWebhookInfo").json())
+
+3. Restart your Replit app (Stop ▶ Run)
+4. Run: python tools/reset_webhook.py
+5. Verify:
+   - Visit https://<YOUR-REPL-NAME>.repl.co/api/v1/telegram/info
+   - Send /ping in Telegram
+   - Expect console: “INBOUND …”
+   - Expect Telegram: “✅ Direct test pong”
+
+Outcome:
+✔️ Webhook stable & self-verifying
+✔️ /ping, /status, /build instant replies
+✔️ Logs confirm inbound traffic
+✔️ No more enqueue or connection failures

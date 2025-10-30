@@ -1,0 +1,62 @@
+════════════════════════════════════════════════════════════════
+REPLIT DEPLOYMENT CONFIGURATION
+════════════════════════════════════════════════════════════════
+
+CRITICAL: I cannot programmatically configure deployments.
+YOU must apply these settings manually in the Replit UI.
+
+════════════════════════════════════════════════════════════════
+STEP-BY-STEP INSTRUCTIONS
+════════════════════════════════════════════════════════════════
+
+1️⃣  OPEN DEPLOYMENTS
+   → Click "Deployments" in left sidebar
+   → Or click existing deployment if one exists
+
+2️⃣  RUN COMMAND (copy this exactly):
+   
+   python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+
+3️⃣  BUILD COMMAND:
+   
+   pip install -r requirements.txt
+   
+   (Or use UI option: "Install from requirements.txt")
+
+4️⃣  DEPLOYMENT ENVIRONMENT VARIABLES
+   
+   Add these 4 variables IN THE DEPLOYMENT (not workspace):
+   
+   TELEGRAM_BOT_TOKEN=8398409114:AAHlA2RHu6UaciF1RJxL2Y8AACCpDF2phVM
+   CHAT_ID_DEFAULT=7484907544
+   ANTHROPIC_API_KEY=REDACTED
+   PUBLIC_URL=https://e82c6963-9ea7-49d1-aebd-cb19bfeaddc8-00-7tpacau3585r.janeway.replit.dev
+   
+   ⚠️  NO trailing slash on PUBLIC_URL!
+
+5️⃣  DEPLOY
+   → Click "Redeploy" (if deployment exists)
+   → Click "Publish" (if creating new deployment)
+   → Select "Autoscale" deployment type
+
+6️⃣  WAIT FOR STATUS
+   → Watch for status: 🟢 Running
+   → Usually takes 2-3 minutes
+   → Check build logs if it fails
+
+7️⃣  WHEN RUNNING
+   → Reply: verified
+   → I will then automatically test everything
+
+════════════════════════════════════════════════════════════════
+WHAT I'LL DO AFTER YOU REPLY "verified"
+════════════════════════════════════════════════════════════════
+
+✅ Test GET / → expect {"ok":true}
+✅ Test GET /api/v1/health → expect {"ok":true,"queue_depth":0}
+✅ Reset Telegram webhook to public URL
+✅ Verify webhook: pending=0, no errors
+✅ Simulate /ping command → expect "Direct test pong"
+✅ Provide summary table with all results
+
+════════════════════════════════════════════════════════════════

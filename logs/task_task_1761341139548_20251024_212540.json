@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "type": "telegram.reply",
+  "chat_id": "7484907544",
+  "message_sent": true,
+  "message_length": 18,
+  "task_id": "task_1761341139548",
+  "duration_seconds": 0.554,
+  "completed_at": "2025-10-24T21:25:40.356955Z",
+  "original_task": {
+    "type": "telegram.reply",
+    "chat_id": "7484907544",
+    "message": "\u2705 Direct test pong",
+    "id": "task_1761341139548",
+    "enqueued_at": "2025-10-24T21:25:39.548435Z"
+  },
+  "tokens_used": 0
+}

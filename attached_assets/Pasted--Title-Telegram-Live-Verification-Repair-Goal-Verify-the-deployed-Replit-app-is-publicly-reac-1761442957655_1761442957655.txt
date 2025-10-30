@@ -1,0 +1,45 @@
+# Title: Telegram Live Verification + Repair
+# Goal: Verify the deployed Replit app is publicly reachable, webhook is valid, and Telegram replies work.
+
+tasks:
+  - name: Verify Replit public health
+    instructions: |
+      1. Fetch ${PUBLIC_URL}/api/v1/health
+      2. Expect a JSON response: {"ok":true}
+      3. If not reachable (HTTP 502 or timeout):
+         - Confirm app deployment is running with autoscale.
+         - Rebuild using:
+             pip install -r requirements.txt
+             python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+         - Wait for status "Running"
+         - Re-test health endpoint until ok:true.
+
+  - name: Verify secrets and environment sync
+    instructions: |
+      1. Check for TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT (or TELEGRAM_CHAT_ID), ANTHROPIC_API_KEY, and PUBLIC_URL.
+      2. If any are missing or masked (like ...), pull full values from workspace secrets and update deployment environment.
+      3. Ensure PUBLIC_URL matches the current deployment (janeway.replit.dev URL).
+
+  - name: Reset Telegram webhook
+    instructions: |
+      1. Use TELEGRAM_BOT_TOKEN and PUBLIC_URL to call:
+         https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${PUBLIC_URL}/api/v1/telegram/${TELEGRAM_BOT_TOKEN}
+      2. Verify response contains {"ok":true}.
+      3. If it fails, log the error text for debugging.
+
+  - name: Test bidirectional connection
+    instructions: |
+      1. POST to ${PUBLIC_URL}/api/v1/telegram/${TELEGRAM_BOT_TOKEN} with:
+         {"message":{"chat":{"id":${CHAT_ID_DEFAULT}},"text":"/ping"}}
+      2. Expect a "Direct test pong" response.
+      3. Then POST again with:
+         {"message":{"chat":{"id":${CHAT_ID_DEFAULT}},"text":"/build read test_sample.py"}}
+      4. Expect response containing "File content" and "SHA1".
+
+  - name: Output report
+    instructions: |
+      Print a final diagnostic summary:
+      - Health status (HTTP code + body)
+      - Webhook status
+      - Telegram inbound/outbound test results
+      - Any remaining issues or next actions

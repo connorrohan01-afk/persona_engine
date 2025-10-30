@@ -1,0 +1,60 @@
+[
+  {
+    "id": "P0001",
+    "name": "Aria",
+    "traits": [
+      "warm",
+      "editorial"
+    ]
+  },
+  {
+    "id": "P0002",
+    "name": "Aria",
+    "traits": [
+      "warm",
+      "editorial"
+    ]
+  },
+  {
+    "id": "P0003",
+    "name": "Aria",
+    "role": "user",
+    "traits": [
+      "warm",
+      "editorial"
+    ],
+    "created_at": "2025-09-28T07:14:18.824966Z",
+    "system": false
+  },
+  {
+    "id": "P0004",
+    "name": "Zara",
+    "role": "user",
+    "traits": [
+      "bold",
+      "playful"
+    ],
+    "created_at": "2025-09-28T07:14:20.277902Z",
+    "system": false
+  },
+  {
+    "id": "P0005",
+    "name": "NoAuth",
+    "role": "user",
+    "traits": [
+      "x"
+    ],
+    "created_at": "2025-10-24T21:05:55.184095Z",
+    "system": false
+  },
+  {
+    "id": "P0006",
+    "name": "NoAuth",
+    "role": "user",
+    "traits": [
+      "x"
+    ],
+    "created_at": "2025-10-24T21:08:15.241365Z",
+    "system": false
+  }
+]

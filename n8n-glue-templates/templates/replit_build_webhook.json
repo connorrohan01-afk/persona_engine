@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${ROUTER_URL}/api/v1/telegram/webhook",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"message\": { \"chat\": { \"id\": 12345 }, \"text\": \"/ping\" } }",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "router-mock",
+      "name": "Router Mock /ping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}

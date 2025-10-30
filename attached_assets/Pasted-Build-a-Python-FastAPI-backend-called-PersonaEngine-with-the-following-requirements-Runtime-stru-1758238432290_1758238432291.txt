@@ -1,0 +1,90 @@
+Build a Python FastAPI backend called PersonaEngine with the following requirements.
+
+Runtime & structure
+	•	Python 3.11, FastAPI, Uvicorn, Pydantic v2, SQLModel (SQLite now, easy swap to Postgres), httpx, python-jose (for token validation), apscheduler or FastAPI BackgroundTasks for jobs, loguru for logs.
+	•	File layout:
+	•	app/main.py (FastAPI init, middleware, router mounts)
+	•	app/config.py (env parsing: pydantic BaseSettings)
+	•	app/security.py (Bearer auth dependency; single shared secret)
+	•	app/db.py (SQLModel engine/session, init)
+	•	app/models.py (SQLModel models: Account, Persona, Session, Post, VaultItem, Job, Metric, LinkClick)
+	•	app/queue.py (enqueue/run jobs with BackgroundTasks; simple table-backed job runner)
+	•	app/rate.py (basic per-tenant/per-persona pacing helpers)
+	•	app/logging.py (loguru setup, request/response logs with request id)
+	•	Routers in app/routes/:
+	•	system.py → /api/v1/health, /api/v1/version
+	•	accounts.py → /api/v1/accounts/create, /api/v1/accounts/warm (stubbed mock for now)
+	•	reddit.py → /api/v1/reddit/post, /api/v1/reddit/comment, /api/v1/reddit/upvote (stubbed)
+	•	scraper.py → /api/v1/scraper/run (stub)
+	•	images.py → /api/v1/image/generate, /api/v1/image/upload (stub)
+	•	vault.py → /api/v1/vault/store, /api/v1/vault/get (stub)
+	•	links.py → /api/v1/link/shorten, /api/v1/link/click (stub)
+	•	telegram.py → /api/v1/telegram/deploy, /api/v1/telegram/webhook (stub)
+	•	tool.py → /api/v1/build (generic tool entry; returns mock)
+	•	Add a root requirements.txt, and README_ROUTES.md documenting request/response JSON for each route.
+
+Auth
+	•	Every route (except /health & /version) requires Authorization: Bearer <AUTH_BEARER_TOKEN>.
+	•	Read secret from env: AUTH_BEARER_TOKEN (required).
+
+Config & Secrets
+	•	app/config.py reads (with defaults where safe):
+	•	AUTH_BEARER_TOKEN (required)
+	•	DATABASE_URL (default sqlite:///./data.db)
+	•	Provider keys (optional; can be empty): SMS_API_KEY, CAPTCHA_API_KEY, PROXY_POOL_URL, REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_REDIRECT_URI, IMAGE_API_KEY, STORAGE_S3_ENDPOINT, STORAGE_S3_BUCKET, STORAGE_S3_KEY, STORAGE_S3_SECRET, TELEGRAM_BOT_TOKEN
+	•	DRY_RUN_DEFAULT (bool; default True)
+	•	TENANT_DEFAULT (default owner)
+
+Models (SQLModel)
+Minimal fields now; we’ll extend later:
+	•	Account(id, tenant_id, username, status, provider_notes, created_at)
+	•	Persona(id, tenant_id, name, reddit_account_id, telegram_bot_token, config_json, created_at)
+	•	Session(id, account_id, proxy, fingerprint_json, cookies_json, created_at, updated_at)
+	•	Post(id, account_id, subreddit, kind, title, body, url, image_url, post_id_ext, status, created_at)
+	•	VaultItem(id, tenant_id, kind, url, meta_json, created_at)
+	•	Job(id, tenant_id, type, args_json, status, attempts, last_error, next_run_at, created_at)
+	•	Metric(id, tenant_id, persona_id, key, value_num, meta_json, created_at)
+	•	LinkClick(id, tenant_id, link_id, persona_id, account_id, ref, created_at)
+
+Middleware & logging
+	•	Request ID header X-Request-Id (generate if missing).
+	•	Log method, path, status, duration, request id, tenant/persona if present.
+
+Routers (stub behavior for now)
+	•	All stub routes accept tenant_id and optional dry query or X-Dry-Run: 1.
+	•	If dry run (or missing provider keys), return {"ok": true, "mode": "mock", ...fake fields...} with stable field names and sample data.
+	•	Always include mode: 'mock'|'live'.
+	•	Return 401 on missing/invalid Bearer.
+
+Endpoints to implement now (stub/mocks)
+	•	GET /api/v1/health → {ok:true, db:'ok', time:...}
+	•	GET /api/v1/version → {name:'PersonaEngine', version:'0.1.0'}
+	•	POST /api/v1/accounts/create → {ok, mode, account_id, username, status} (mock)
+	•	POST /api/v1/accounts/warm → {ok, mode, account_id, status} (mock)
+	•	POST /api/v1/reddit/post → {ok, mode, post_id, status} (mock)
+	•	POST /api/v1/reddit/comment → {ok, mode, comment_id, status} (mock)
+	•	POST /api/v1/reddit/upvote → {ok, mode, status} (mock)
+	•	POST /api/v1/scraper/run → {ok, mode, items:[{title,url,subreddit,score}]} (mock)
+	•	POST /api/v1/image/generate → {ok, mode, url} (mock)
+	•	POST /api/v1/image/upload → {ok, mode, url} (mock)
+	•	POST /api/v1/vault/store → {ok, mode, file_id, url} (mock)
+	•	GET  /api/v1/vault/get?file_id=... → {ok, mode, file_id, url} (mock)
+	•	POST /api/v1/link/shorten → {ok, mode, link_id, short_url} (mock)
+	•	POST /api/v1/telegram/deploy → {ok, mode, bot_username, webhook_url} (mock)
+	•	POST /api/v1/telegram/webhook → {ok:true} (no auth; Telegram needs it public)
+	•	POST /api/v1/build → {ok:true, received: body} (mock)
+
+Queue & rate
+	•	queue.enqueue(job_type, args_dict, idempotency_key=None) persists to Job table.
+	•	queue.worker_tick() function to process due jobs (call on startup and expose /api/v1/system/tick with auth).
+	•	rate.should_post(account_id | persona_id) returns True/False based on simple intervals (config).
+
+Run
+	•	Add poetry or plain requirements.txt.
+	•	Start command: uvicorn app.main:app --host 0.0.0.0 --port 8000.
+	•	Ensure the public URL is visible in the console after run.
+
+Deliverables
+	•	Working service with all routes above returning mock outputs and mode:'mock'.
+	•	README with route contracts.
+	•	A .env.example listing all envs.

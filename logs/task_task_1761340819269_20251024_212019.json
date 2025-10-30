@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "type": "deploy.test",
+  "endpoint": "http://localhost:5000/api/v1/health",
+  "method": "GET",
+  "status_code": 200,
+  "response": {
+    "ok": true,
+    "db": "ok",
+    "time": "2025-10-24T21:20:19.557241"
+  },
+  "headers": {
+    "date": "Fri, 24 Oct 2025 21:20:19 GMT",
+    "server": "uvicorn",
+    "content-length": "57",
+    "content-type": "application/json",
+    "x-request-id": "1881021b-5ef7-4b4f-8eec-fbe274afe922"
+  },
+  "task_id": "task_1761340819269",
+  "duration_seconds": 0.089,
+  "completed_at": "2025-10-24T21:20:19.562164Z",
+  "original_task": {
+    "type": "deploy.test",
+    "endpoint": "http://localhost:5000/api/v1/health",
+    "method": "GET",
+    "id": "task_1761340819269",
+    "enqueued_at": "2025-10-24T21:20:19.269826Z"
+  },
+  "tokens_used": 0
+}

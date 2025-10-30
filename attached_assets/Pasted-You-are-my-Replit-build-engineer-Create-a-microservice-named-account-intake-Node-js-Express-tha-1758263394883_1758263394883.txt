@@ -1,0 +1,457 @@
+You are my Replit build engineer. Create a microservice named account-intake (Node.js + Express) that securely ingests and links existing account metadata (username, platform, notes), attaches session artifacts (cookie string or token blobs), associates a proxy and a vault record, and exposes simple CRUD + health endpoints. This service must not automate any third-party site or attempt external logins. It’s just intake + linking + storage with mock-friendly adapters.
+
+Requirements (must follow)
+	•	Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid.
+	•	Structure: server.js, src/lib/{auth,validators,store}.js, src/routes/{accounts,proxies,vaults}.js, README.md, package.json.
+	•	Auth: Bearer header via AUTH_BEARER_TOKEN (default fallback intake_token_123).
+	•	Storage: In-memory maps (accounts, proxies, vaults) with helper functions.
+	•	Mock-friendly flags (read from env):
+USE_MOCK_VAULT=true (just stores blobs in memory),
+USE_MOCK_PROXY=true (no real connectivity; only metadata + fake checks).
+	•	Endpoints under /api/v1. Include /health and print AVAILABLE_ROUTES at boot.
+	•	All JSON responses use envelope: { ok: true|false, data?, error? }.
+	•	Rate limit: 200 req / 5 min default.
+	•	Include concise README with example curl.
+
+Files to create (full contents exactly as below)
+
+package.json
+json
+
+{
+  "name": "account-intake",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "zod": "^3.23.8",
+    "nanoid": "^5.0.7"
+  }
+}
+
+server.js
+js
+
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { bearerAuth } from './src/lib/auth.js';
+import accountsRouter from './src/routes/accounts.js';
+import proxiesRouter from './src/routes/proxies.js';
+import vaultsRouter from './src/routes/vaults.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 200, standardHeaders: true });
+app.use(limiter);
+
+// Health (no auth)
+app.get('/api/v1/health', (req, res) => {
+  res.json({ ok: true, data: { service: 'account-intake', status: 'healthy' } });
+});
+
+// Protected routes
+app.use('/api/v1/accounts', bearerAuth, accountsRouter);
+app.use('/api/v1/proxies', bearerAuth, proxiesRouter);
+app.use('/api/v1/vaults', bearerAuth, vaultsRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+// Route print
+function printRoutes() {
+  const routes = [];
+  app._router.stack.forEach((m) => {
+    if (m.route && m.route.path) {
+      const methods = Object.keys(m.route.methods).map(m => m.toUpperCase()).join(',');
+      routes.push(`${methods.padEnd(6)} ${m.route.path}`);
+    } else if (m.name === 'router' && m.handle.stack) {
+      m.handle.stack.forEach((h) => {
+        if (h.route) {
+          const methods = Object.keys(h.route.methods).map(m => m.toUpperCase()).join(',');
+          routes.push(`${methods.padEnd(6)} ${m.regexp?.toString().replace(/^\/\^\\/, '/').replace(/\\\/\?$begin:math:text$\\?=\\\\\\/\\|\\$$end:math:text$\/i$/, '')}${h.route.path}`);
+        }
+      });
+    }
+  });
+  console.log('AVAILABLE_ROUTES');
+  routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+  console.log(`account-intake listening on :${PORT}`);
+  printRoutes();
+  console.log('READY');
+});
+
+export default app;
+
+src/lib/auth.js
+js
+
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'intake_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, sandbox: true };
+  next();
+}
+
+src/lib/validators.js
+js
+
+import { z } from 'zod';
+
+export const AccountCreateSchema = z.object({
+  platform: z.string().min(2),                 // e.g., "reddit" (label only; no external calls)
+  username: z.string().min(1),
+  notes: z.string().optional(),
+  proxyId: z.string().optional(),
+  vaultId: z.string().optional(),
+  session: z.object({
+    cookies: z.string().optional(),            // raw cookie string (stored as provided)
+    token: z.string().optional(),              // bearer or csrf token blob
+    meta: z.record(z.any()).optional()
+  }).optional(),
+  meta: z.record(z.any()).optional()
+});
+
+export const AccountPatchSchema = z.object({
+  username: z.string().optional(),
+  notes: z.string().optional(),
+  proxyId: z.string().nullable().optional(),
+  vaultId: z.string().nullable().optional(),
+  session: z.object({
+    cookies: z.string().nullable().optional(),
+    token: z.string().nullable().optional(),
+    meta: z.record(z.any()).optional()
+  }).optional(),
+  meta: z.record(z.any()).optional(),
+  status: z.enum(['intake','warm','active','disabled']).optional()
+});
+
+export const ProxySchema = z.object({
+  label: z.string().min(1),
+  url: z.string().url(), // stored only; no connectivity
+  meta: z.record(z.any()).optional()
+});
+
+export const VaultCreateSchema = z.object({
+  label: z.string().min(1),
+  blob: z.string().min(1), // base64 or string content
+  meta: z.record(z.any()).optional()
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) {
+    return { ok: false, error: r.error.flatten() };
+  }
+  return { ok: true, data: r.data };
+}
+
+src/lib/store.js
+js
+
+import { nanoid } from 'nanoid';
+
+const accounts = new Map(); // id -> account
+const proxies = new Map();  // id -> proxy
+const vaults  = new Map();  // id -> vault
+
+export const db = { accounts, proxies, vaults };
+
+// ACCOUNT helpers
+export function createAccount(payload) {
+  const id = nanoid();
+  const now = new Date().toISOString();
+  const acct = {
+    id,
+    createdAt: now,
+    updatedAt: now,
+    status: 'intake',
+    ...payload
+  };
+  accounts.set(id, acct);
+  return acct;
+}
+export function listAccounts({ offset = 0, limit = 50 } = {}) {
+  const all = Array.from(accounts.values());
+  return { total: all.length, items: all.slice(offset, offset + limit) };
+}
+export function getAccount(id) { return accounts.get(id) || null; }
+export function patchAccount(id, patch) {
+  const cur = accounts.get(id);
+  if (!cur) return null;
+  const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  accounts.set(id, updated);
+  return updated;
+}
+export function deleteAccount(id) { return accounts.delete(id); }
+
+// PROXY helpers (no real networking)
+export function createProxy(payload) {
+  const id = nanoid();
+  const now = new Date().toISOString();
+  const p = { id, createdAt: now, updatedAt: now, healthy: true, ...payload };
+  proxies.set(id, p);
+  return p;
+}
+export function listProxies() { return Array.from(proxies.values()); }
+export function getProxy(id) { return proxies.get(id) || null; }
+export function patchProxy(id, patch) {
+  const cur = proxies.get(id);
+  if (!cur) return null;
+  const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  proxies.set(id, updated);
+  return updated;
+}
+export function deleteProxy(id) { return proxies.delete(id); }
+
+// VAULT helpers (mock)
+export function createVault(payload) {
+  const id = nanoid();
+  const now = new Date().toISOString();
+  const v = { id, createdAt: now, updatedAt: now, ...payload };
+  vaults.set(id, v);
+  return v;
+}
+export function listVaults() { return Array.from(vaults.values()); }
+export function getVault(id) { return vaults.get(id) || null; }
+export function patchVault(id, patch) {
+  const cur = vaults.get(id);
+  if (!cur) return null;
+  const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  vaults.set(id, updated);
+  return updated;
+}
+export function deleteVault(id) { return vaults.delete(id); }
+
+src/routes/accounts.js
+js
+
+import { Router } from 'express';
+import { parse, AccountCreateSchema, AccountPatchSchema } from '../lib/validators.js';
+import { createAccount, listAccounts, getAccount, patchAccount, deleteAccount, getProxy, getVault } from '../lib/store.js';
+
+const r = Router();
+
+// POST /accounts — create intake record
+r.post('/', (req, res) => {
+  const v = parse(AccountCreateSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const { proxyId, vaultId } = v.data;
+
+  if (proxyId && !getProxy(proxyId)) return res.status(400).json({ ok: false, error: { message: 'proxy_not_found' } });
+  if (vaultId && !getVault(vaultId)) return res.status(400).json({ ok: false, error: { message: 'vault_not_found' } });
+
+  const created = createAccount(v.data);
+  console.log('[INTAKE] account created', created.id, created.platform, created.username);
+  res.json({ ok: true, data: created });
+});
+
+// GET /accounts
+r.get('/', (req, res) => {
+  const offset = Number(req.query.offset || 0) || 0;
+  const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+  const list = listAccounts({ offset, limit });
+  res.json({ ok: true, data: list });
+});
+
+// GET /accounts/:id
+r.get('/:id', (req, res) => {
+  const a = getAccount(req.params.id);
+  if (!a) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: a });
+});
+
+// PATCH /accounts/:id — attach/update session/proxy/vault/status
+r.patch('/:id', (req, res) => {
+  const v = parse(AccountPatchSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  if (v.data.proxyId && !getProxy(v.data.proxyId)) return res.status(400).json({ ok: false, error: { message: 'proxy_not_found' } });
+  if (v.data.vaultId && !getVault(v.data.vaultId)) return res.status(400).json({ ok: false, error: { message: 'vault_not_found' } });
+
+  const updated = patchAccount(req.params.id, v.data);
+  if (!updated) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: updated });
+});
+
+// DELETE /accounts/:id
+r.delete('/:id', (req, res) => {
+  const ok = deleteAccount(req.params.id);
+  if (!ok) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: { id: req.params.id, deleted: true } });
+});
+
+export default r;
+
+src/routes/proxies.js
+js
+
+import { Router } from 'express';
+import { parse, ProxySchema } from '../lib/validators.js';
+import { createProxy, listProxies, getProxy, patchProxy, deleteProxy } from '../lib/store.js';
+
+const r = Router();
+
+// POST /proxies
+r.post('/', (req, res) => {
+  if (process.env.USE_MOCK_PROXY === 'false') {
+    // still no real connectivity here; just a flag for future adapter swap
+  }
+  const v = parse(ProxySchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const created = createProxy(v.data);
+  res.json({ ok: true, data: created });
+});
+
+// GET /proxies
+r.get('/', (req, res) => res.json({ ok: true, data: listProxies() }));
+
+// GET /proxies/:id
+r.get('/:id', (req, res) => {
+  const p = getProxy(req.params.id);
+  if (!p) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: p });
+});
+
+// PATCH /proxies/:id
+r.patch('/:id', (req, res) => {
+  const p = patchProxy(req.params.id, req.body || {});
+  if (!p) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: p });
+});
+
+// DELETE /proxies/:id
+r.delete('/:id', (req, res) => {
+  const ok = deleteProxy(req.params.id);
+  if (!ok) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: { id: req.params.id, deleted: true } });
+});
+
+export default r;
+
+src/routes/vaults.js
+js
+
+import { Router } from 'express';
+import { parse, VaultCreateSchema } from '../lib/validators.js';
+import { createVault, listVaults, getVault, patchVault, deleteVault } from '../lib/store.js';
+
+const r = Router();
+
+// POST /vaults
+r.post('/', (req, res) => {
+  if (process.env.USE_MOCK_VAULT === 'false') {
+    // placeholder for swapping in a real secrets adapter later
+  }
+  const v = parse(VaultCreateSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const created = createVault(v.data);
+  res.json({ ok: true, data: created });
+});
+
+// GET /vaults
+r.get('/', (req, res) => res.json({ ok: true, data: listVaults() }));
+
+// GET /vaults/:id
+r.get('/:id', (req, res) => {
+  const v = getVault(req.params.id);
+  if (!v) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: v });
+});
+
+// PATCH /vaults/:id
+r.patch('/:id', (req, res) => {
+  const vlt = patchVault(req.params.id, req.body || {});
+  if (!vlt) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: vlt });
+});
+
+// DELETE /vaults/:id
+r.delete('/:id', (req, res) => {
+  const ok = deleteVault(req.params.id);
+  if (!ok) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: { id: req.params.id, deleted: true } });
+});
+
+export default r;
+
+README.md
+md
+
+# account-intake
+
+Intake/linker for existing accounts. Stores basic profile, optional session artifacts (cookie/token), and links to proxy & vault records. No external automation or logins.
+
+## Env
+- AUTH_BEARER_TOKEN (default: `intake_token_123`)
+- USE_MOCK_PROXY=true
+- USE_MOCK_VAULT=true
+- PORT=3000
+
+## Run
+
+npm run dev
+
+## Health (no auth)
+
+curl -s https://.replit.app/api/v1/health
+
+## Auth header
+`Authorization: Bearer intake_token_123` (or your secret)
+
+## Quick flow
+Create proxy:
+
+curl -s -X POST https://.replit.app/api/v1/proxies 
+-H “Authorization: Bearer intake_token_123” -H “Content-Type: application/json” 
+-d ‘{“label”:“pA”,“url”:“http://user:pass@host:10000”}’
+
+Create vault (store any blob/string):
+
+curl -s -X POST https://.replit.app/api/v1/vaults 
+-H “Authorization: Bearer intake_token_123” -H “Content-Type: application/json” 
+-d ‘{“label”:“sess-blob”,“blob”:“cookie=abc; token=xyz”}’
+
+Create account intake:
+
+curl -s -X POST https://.replit.app/api/v1/accounts 
+-H “Authorization: Bearer intake_token_123” -H “Content-Type: application/json” 
+-d ‘{
+“platform”:“reddit”,
+“username”:“u_demo”,
+“notes”:“manual onboarded”,
+“proxyId”:””,
+“vaultId”:””,
+“session”: { “cookies”:“cookie=abc”, “token”:“xyz” },
+“meta”: { “owner”:“me” }
+}’
+
+Patch account (link new vault/proxy or update status):
+
+curl -s -X PATCH https://.replit.app/api/v1/accounts/ 
+-H “Authorization: Bearer intake_token_123” -H “Content-Type: application/json” 
+-d ‘{ “status”:“warm”, “notes”:“warmed 24h” }’
+
+List accounts:
+
+curl -s -H “Authorization: Bearer intake_token_123” 
+https://.replit.app/api/v1/accounts?limit=50

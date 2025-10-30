@@ -1,0 +1,58 @@
+{
+  "persona_id": "P0001",
+  "job_id": "J0003",
+  "style": "studio",
+  "count": 6,
+  "seeds": [
+    331671,
+    992329,
+    678315,
+    639957,
+    636477,
+    543104
+  ],
+  "slots": {
+    "outfit": "red dress",
+    "mood": "playful",
+    "setting": "loft"
+  },
+  "styleConfig": {
+    "name": "Studio Portrait",
+    "sampler": "DPM++ 2M Karras",
+    "cfg": 7,
+    "steps": 25
+  },
+  "images": [
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_001.jpg",
+      "seed": 331671,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_002.jpg",
+      "seed": 992329,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_003.jpg",
+      "seed": 678315,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_004.jpg",
+      "seed": 639957,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_005.jpg",
+      "seed": 636477,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0003/studio/image_006.jpg",
+      "seed": 543104,
+      "size": 70
+    }
+  ],
+  "created_at": "2025-09-28T06:44:08.861Z"
+}

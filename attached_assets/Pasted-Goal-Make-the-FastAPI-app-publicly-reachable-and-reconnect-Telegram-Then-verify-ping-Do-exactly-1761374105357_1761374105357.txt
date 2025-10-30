@@ -1,0 +1,60 @@
+Goal: Make the FastAPI app publicly reachable and reconnect Telegram. Then verify /ping.
+
+Do exactly, in order:
+
+1) Fix server entrypoint to bind to Replit’s dynamic $PORT.
+   - Open app/server.py.
+   - Ensure it ends EXACTLY with:
+
+     if __name__ == "__main__":
+         import os, uvicorn
+         PORT = int(os.getenv("PORT", "5000"))
+         uvicorn.run("app.server:app", host="0.0.0.0", port=PORT)
+
+   - If this block already exists, keep it and only change the port to use int(os.getenv("PORT","5000")) and host="0.0.0.0".
+
+2) Dependencies
+   - Ensure requirements.txt contains (one per line, no version pins unless already present):
+     fastapi
+     uvicorn
+     httpx
+     anthropic
+     requests
+   - If using Poetry instead, add those to pyproject.toml and lock.
+
+3) Publishing config (Deploy tab)
+   - Set Build command:
+       pip install -r requirements.txt
+   - Set Start command:
+       python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+   - Save, then Publish / Deploy a new version. Wait for deploy to complete.
+
+4) Print the public URL and quick health check
+   - After deploy, capture the public *.replit.dev URL.
+   - GET {PUBLIC_URL}/api/v1/health and print the response line “HEALTH:” followed by the JSON.
+
+5) Reset Telegram webhook
+   - Run: python tools/reset_webhook.py
+   - Print the line “WEBHOOK RESET OK” only if Telegram reports ok:true and no errors.
+
+6) Simulate inbound /ping to verify webhook handler
+   - POST a JSON body to {PUBLIC_URL}/api/v1/telegram/${TELEGRAM_BOT_TOKEN}:
+       {"message":{"chat":{"id": "<CHAT_ID_DEFAULT>"},"text":"/ping"}}
+   - Print “SIM PING POSTED”.
+
+7) Final report (short)
+   - Show:
+     • Routes detected
+     • Health JSON
+     • Webhook URL in use (mask token middle with “…”)
+     • “Ready: send /ping from Telegram”
+
+Constraints:
+- Do NOT print secrets (mask token to first 6 chars + “…” + last 4).
+- Keep edits minimal; don’t refactor unrelated code.
+- If app/server.py is missing, create it with the current routes and the webhook endpoint we already use.
+
+Acceptance:
+- {PUBLIC_URL}/api/v1/health returns {"ok": true, "queue_depth": 0} (queue_depth may vary).
+- Webhook reset reports no errors.
+- Telegram /ping from the chat replies “✅ Direct test pong”.

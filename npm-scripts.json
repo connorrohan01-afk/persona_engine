@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "dev": "npx ts-node-dev src/server.ts",
+    "smoke:persona": "curl -X POST http://localhost:3000/api/v1/persona.new -H 'Content-Type: application/json' -d '{\"name\":\"Curl Test Persona\",\"traits\":[\"test\",\"curl\",\"automated\"],\"refs\":[\"curl_test\"]}'",
+    "smoke:gen": "curl -X POST http://localhost:3000/api/v1/gen -H 'Content-Type: application/json' -d '{\"persona_id\":\"P0001\",\"style\":\"studio\",\"count\":1,\"slots\":{\"outfit\":\"test outfit\",\"mood\":\"confident\",\"setting\":\"test studio\"},\"seed\":42}'",
+    "smoke:more": "curl -X POST http://localhost:3000/api/v1/gen.more -H 'Content-Type: application/json' -d '{\"persona_id\":\"P0001\",\"job_id\":\"J0001\",\"count\":1}'",
+    "smoke:vault": "curl -s 'http://localhost:3000/api/v1/vault.open?persona_id=P0001&job_id=J0001&style=studio'",
+    "smoke:test": "npx ts-node src/test/smoke.ts"
+  }
+}

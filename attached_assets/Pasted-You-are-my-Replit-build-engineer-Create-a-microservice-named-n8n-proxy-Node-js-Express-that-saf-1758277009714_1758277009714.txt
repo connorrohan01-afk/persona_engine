@@ -1,0 +1,244 @@
+You are my Replit build engineer. Create a microservice named n8n-proxy (Node.js + Express) that safely proxies a few n8n Cloud API calls so my n8n workflow never holds master tokens.
+
+NON-NEGOTIABLES
+- No secrets hardcoded. Read from process.env only.
+- Bearer auth on every protected route via AUTH_BEARER_TOKEN (fallback dev value ok).
+- Minimal deps: express, helmet, morgan, express-rate-limit, zod, node-fetch (or undici).
+- Rate limit: 200 req / 5 min (IP).
+- JSON envelope responses: { ok: true|false, data?, error? }.
+- Log mounted routes on boot and print "PROXY READY".
+
+SECRETS TO READ (already set in Replit → Secrets):
+- AUTH_BEARER_TOKEN           (e.g., my_proxy_key_123)
+- N8N_API_URL                 (e.g., https://YOUR-SUBDOMAIN.app.n8n.cloud)
+- N8N_API_TOKEN               (the long API key)
+- N8N_PROJECT_ID              (optional; include header n8n-project-id only if present)
+- CHAT_ID_DEFAULT             (optional; used only in examples)
+
+FILES TO CREATE (full contents):
+
+package.json
+{
+  "name": "n8n-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "zod": "^3.23.8",
+    "undici": "^6.19.8"
+  }
+}
+
+server.js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import n8nRouter from './src/routes/n8n.js';
+import { bearerAuth } from './src/lib/auth.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 200, standardHeaders: true });
+app.use(limiter);
+
+// Health (no auth)
+app.get('/api/v1/health', (req, res) => {
+  res.json({ ok: true, data: { service: 'n8n-proxy', status: 'healthy' } });
+});
+
+// Protected n8n proxy routes
+app.use('/api/v1/n8n', bearerAuth, n8nRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+function listRoutes() {
+  const lines = [];
+  app._router.stack.forEach((s) => {
+    if (s.route) {
+      const methods = Object.keys(s.route.methods).map(m => m.toUpperCase()).join(',');
+      lines.push(`${methods.padEnd(6)} ${s.route.path}`);
+    } else if (s.name === 'router' && s.handle?.stack) {
+      s.handle.stack.forEach(h => {
+        if (h.route) {
+          const methods = Object.keys(h.route.methods).map(m => m.toUpperCase()).join(',');
+          lines.push(`${methods.padEnd(6)} /api/v1/n8n${h.route.path}`);
+        }
+      });
+    }
+  });
+  console.log('AVAILABLE_ROUTES');
+  lines.sort().forEach(l => console.log(l));
+}
+
+app.listen(PORT, () => {
+  console.log(`n8n-proxy listening on :${PORT}`);
+  listRoutes();
+  console.log('PROXY READY');
+});
+
+export default app;
+
+src/lib/auth.js
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'proxy_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true };
+  next();
+}
+
+src/lib/n8n.js
+import { fetch } from 'undici';
+
+const base = (process.env.N8N_API_URL || '').replace(/\/+$/, '');
+const apiKey = process.env.N8N_API_TOKEN || '';
+const projectId = process.env.N8N_PROJECT_ID || '';
+
+if (!base || !apiKey) {
+  console.warn('[WARN] N8N_API_URL or N8N_API_TOKEN not set. Proxy calls will fail.');
+}
+
+function headers(extra = {}) {
+  const h = {
+    'X-N8N-API-KEY': apiKey,
+    'content-type': 'application/json',
+    ...extra,
+  };
+  if (projectId) h['n8n-project-id'] = projectId;
+  return h;
+}
+
+export async function n8nGet(path) {
+  const r = await fetch(`${base}${path}`, { method: 'GET', headers: headers() });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw new Error(typeof data === 'object' ? JSON.stringify(data) : String(data));
+  return data;
+}
+
+export async function n8nPost(path, body) {
+  const r = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(body ?? {}),
+  });
+  // n8n activate returns 204 sometimes; normalize
+  if (r.status === 204) return { ok: true, data: null };
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw new Error(typeof data === 'object' ? JSON.stringify(data) : String(data));
+  return data;
+}
+
+src/routes/n8n.js
+import { Router } from 'express';
+import { z } from 'zod';
+import { n8nGet, n8nPost } from '../lib/n8n.js';
+
+const r = Router();
+
+// Schemas
+const CreateSchema = z.object({
+  name: z.string().min(1).default('Generated Workflow'),
+  settings: z.object({ timezone: z.string().default('UTC') }).default({ timezone: 'UTC' }),
+  nodes: z.array(z.any()).default([]),
+  connections: z.record(z.any()).default({})
+});
+
+const ActivateSchema = z.object({
+  workflow_id: z.string().min(1)
+});
+
+// POST /api/v1/n8n/create
+r.post('/create', async (req, res) => {
+  try {
+    const parsed = CreateSchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    const created = await n8nPost('/api/v1/workflows', parsed.data);
+    res.json({ ok: true, data: created });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: { message: String(e.message || e) } });
+  }
+});
+
+// POST /api/v1/n8n/activate
+r.post('/activate', async (req, res) => {
+  try {
+    const parsed = ActivateSchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    const id = parsed.data.workflow_id;
+    const out = await n8nPost(`/api/v1/workflows/${id}/activate`, {});
+    res.json({ ok: true, data: out ?? { activated: true, id } });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: { message: String(e.message || e) } });
+  }
+});
+
+// GET /api/v1/n8n/workflows/:id
+r.get('/workflows/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const wf = await n8nGet(`/api/v1/workflows/${id}`);
+    res.json({ ok: true, data: wf });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: { message: String(e.message || e) } });
+  }
+});
+
+export default r;
+
+README.md
+# n8n-proxy
+
+Tiny proxy that lets n8n trigger actions without exposing your n8n API token inside workflows.
+
+## Env (Replit → Secrets)
+- `AUTH_BEARER_TOKEN`  e.g. `my_proxy_key_123`
+- `N8N_API_URL`        e.g. `https://your-subdomain.app.n8n.cloud`
+- `N8N_API_TOKEN`      your n8n API key
+- `N8N_PROJECT_ID`     optional
+- `PORT`               optional (defaults 3000)
+
+## Run
+`npm run dev`
+
+## Routes
+- `GET  /api/v1/health`
+- `POST /api/v1/n8n/create`
+- `POST /api/v1/n8n/activate`
+- `GET  /api/v1/n8n/workflows/:id`
+
+## Example curl
+AUTH="Authorization: Bearer my_proxy_key_123"
+
+# health
+curl -s https://<your-repl>.replit.app/api/v1/health
+
+# create
+curl -s -X POST https://<your-repl>.replit.app/api/v1/n8n/create \
+ -H "$AUTH" -H "content-type: application/json" \
+ -d '{"name":"Generated Workflow","settings":{"timezone":"UTC"},"nodes":[],"connections":{}}'
+
+# activate
+curl -s -X POST https://<your-repl>.replit.app/api/v1/n8n/activate \
+ -H "$AUTH" -H "content-type: application/json" \
+ -d '{"workflow_id":"<id-from-create>"}'
+
+# get
+curl -s -H "$AUTH" https://<your-repl>.replit.app/api/v1/n8n/workflows/<id>

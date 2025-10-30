@@ -1,0 +1,133 @@
+# routes/build.py
+from fastapi import APIRouter, Request
+import os, httpx, re, json
+
+router = APIRouter()
+
+N8N_HOST = os.environ.get("N8N_HOST", "").rstrip("/")
+N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
+
+def parse_spec(spec: str):
+    """
+    Extremely small parser:
+    - finds an interval (minutes or seconds)
+    - produces a Cron node that runs on that interval
+    - produces a simple Set node with a message (can be changed to Telegram later)
+    """
+    spec = (spec or "").strip()
+
+    # interval: "every 30 minutes" or "ping every 5s"
+    minutes = None
+    seconds = None
+    m = re.search(r"every\s+(\d+)\s*min", spec, re.I)
+    if m: minutes = int(m.group(1))
+    s = re.search(r"every\s+(\d+)\s*s(ec)?", spec, re.I)
+    if s: seconds = int(s.group(1))
+
+    # default to 5 minutes if nothing matched
+    if not minutes and not seconds:
+        minutes = 5
+
+    # cron expression: use */N * * * * for minutes; for seconds we’ll fake with every minute for now
+    if minutes:
+        cron = f"*/{max(1, minutes)} * * * *"
+    else:
+        # n8n cron doesn’t support seconds; keep it simple: every minute
+        cron = "*/1 * * * *"
+
+    # very small two-node workflow: Cron -> Set
+    nodes = [
+        {
+            "id": "Cron1",
+            "name": "Cron",
+            "type": "n8n-nodes-base.cron",
+            "typeVersion": 1,
+            "position": [ 300, 300 ],
+            "parameters": { "rule": { "hour": "*", "minute": cron.split()[0] } }  # quick mapping
+        },
+        {
+            "id": "Set1",
+            "name": "Set",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [ 520, 300 ],
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {"name": "message", "value": f"Spec: {spec or 'no spec'}", "type": "string"}
+                    ]
+                }
+            }
+        }
+    ]
+    connections = { "Cron": { "main": [[ { "node": "Set", "type": "main", "index": 0 } ]] } }
+
+    # the UI names must match node "name"
+    # fix connections to use names present above
+    connections = {
+        "Cron": { "main": [[ { "node": "Set", "type": "main", "index": 0 } ]] }
+    }
+
+    return nodes, connections
+
+async def create_and_activate_workflow(name: str, spec: str):
+    if not N8N_HOST or not N8N_API_KEY:
+        return {"ok": False, "message": "n8n not configured", "details": {"N8N_HOST": bool(N8N_HOST), "N8N_API_KEY": bool(N8N_API_KEY)}}
+
+    nodes, connections = parse_spec(spec)
+
+    body = {
+        "name": name or "generated-workflow",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"timezone": "UTC"}
+    }
+
+    headers = {
+        "X-N8N-API-KEY": N8N_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        # create
+        r1 = await client.post(f"{N8N_HOST}/api/v1/workflows", headers=headers, json=body)
+        if r1.status_code >= 300:
+            return {"ok": False, "step": "create", "status": r1.status_code, "resp": r1.text}
+
+        wf = r1.json()
+        wf_id = wf.get("id") or wf.get("data", {}).get("id")
+
+        # activate
+        r2 = await client.post(f"{N8N_HOST}/api/v1/workflows/{wf_id}/activate", headers=headers)
+        if r2.status_code >= 300:
+            return {"ok": False, "step": "activate", "status": r2.status_code, "resp": r2.text, "workflow": wf}
+
+        return {"ok": True, "workflow": wf, "activated": True}
+
+@router.post("/")
+async def build_workflow(request: Request):
+    payload = await request.json()
+    actions = payload.get("actions", [])
+    metadata = payload.get("metadata", {})
+
+    # find first "build" action
+    build = next((a for a in actions if a.get("type") in ("build","create","n8n.build")), None)
+    if not build:
+        return {"ok": False, "message": "No build action found", "data": payload}
+
+    build_payload = build.get("payload", {}) or {}
+    name = build_payload.get("name") or "generated-workflow"
+    spec = build_payload.get("spec") or ""
+
+    result = await create_and_activate_workflow(name, spec)
+
+    return {
+        "ok": bool(result.get("ok")),
+        "message": "Build request processed" if result.get("ok") else "Build failed",
+        "data": {
+            "workflow_name": name,
+            "spec": spec,
+            "result": result,
+            "metadata": metadata
+        }
+    }

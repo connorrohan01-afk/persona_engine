@@ -1,0 +1,50 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/proxies",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"pA\", \"url\":\"http://user:pass@host:10000\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-proxy",
+      "name": "Intake: Create Proxy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 120 ]
+    },
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/vaults",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"sess-blob\", \"blob\":\"cookie=abc; token=xyz\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-vault",
+      "name": "Intake: Create Vault",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 220 ]
+    },
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/accounts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"platform\":\"reddit\", \"username\":\"u_demo\", \"notes\":\"manual onboarded\", \"proxyId\":\"={{$json.data.id}}\", \"vaultId\":\"={{$json.data.id}}\", \"session\": { \"cookies\":\"cookie=abc\", \"token\":\"xyz\" }, \"meta\": { \"owner\":\"me\" } }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-account",
+      "name": "Intake: Create Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 320 ]
+    }
+  ],
+  "connections": {}
+}

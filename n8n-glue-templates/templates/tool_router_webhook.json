@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tool-router",
+        "responseMode": "responseNode"
+      },
+      "id": "tool-webhook",
+      "name": "Webhook (Tool Router)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [ 200, 200 ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, echo: $json } }}"
+      },
+      "id": "tool-respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [ 420, 200 ]
+    }
+  ],
+  "connections": {
+    "Webhook (Tool Router)": { "main": [ [ { "node": "Respond OK", "type": "main", "index": 0 } ] ] }
+  }
+}

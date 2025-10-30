@@ -1,0 +1,264 @@
+You are my Replit build engineer. Create a microservice named cluster-orchestrator (Node.js + Express) that manages groups of personas, accounts, and jobs across other internal services. It does NOT automate third-party sites. It coordinates our own microservices (persona-core, content-scheduler, account-intake, vaults) to create and monitor clusters.
+
+REQUIREMENTS (must follow)
+• Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, axios.
+• Structure: server.js, src/lib/{auth,validators,store,forward}.js, src/routes/{clusters,health}.js, README.md, package.json.
+• Auth: Bearer header via AUTH_BEARER_TOKEN (default orchestrator_token_123).
+• Store: in-memory Maps for clusters. Cluster shape: { id, label, personaIds:[], accountIds:[], jobIds:[], status:"draft|active|paused|archived", createdAt, updatedAt, meta }.
+• Endpoints:
+  - GET /api/v1/health → status only.
+  - POST /api/v1/clusters { label, personaIds?, accountIds?, jobIds?, meta? } → create.
+  - GET /api/v1/clusters → list.
+  - GET /api/v1/clusters/:id → fetch.
+  - PATCH /api/v1/clusters/:id { label?, personaIds?, accountIds?, jobIds?, status?, meta? } → update.
+  - DELETE /api/v1/clusters/:id → delete.
+  - POST /api/v1/clusters/:id/activate → forward to persona-core + scheduler to activate.
+  - POST /api/v1/clusters/:id/pause → mark status paused.
+  - POST /api/v1/clusters/:id/sync → re-query linked services (stub forward).
+• Forward: use axios to send safe JSON POSTs to registered services (persona-core, content-scheduler, intake). Fail gracefully with retries (2 attempts).
+• Observability: log each cluster change (console + JSON). On boot, print AVAILABLE_ROUTES and “READY: cluster-orchestrator”.
+• Envelope: all JSON responses use { ok: true|false, data?, error? }.
+• Rate limit: 200 req / 5 min.
+
+FILES TO CREATE (exact contents)
+
+package.json
+json
+{
+  "name": "cluster-orchestrator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  }
+}
+
+server.js
+js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { bearerAuth } from './src/lib/auth.js';
+import clustersRouter from './src/routes/clusters.js';
+import healthRouter from './src/routes/health.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 200, standardHeaders: true });
+app.use(limiter);
+
+app.use('/api/v1/health', healthRouter);
+app.use('/api/v1/clusters', bearerAuth, clustersRouter);
+
+app.use((req,res)=>res.status(404).json({ok:false,error:{message:"not_found"}}));
+
+function printRoutes() {
+  const routes=[];
+  const scan=(stack,base="")=>{
+    stack.forEach(l=>{
+      if(l.route){
+        const m=Object.keys(l.route.methods).map(x=>x.toUpperCase()).join(',');
+        routes.push(`${m.padEnd(6)} ${base}${l.route.path}`);
+      } else if(l.name==="router"&&l.handle?.stack){
+        scan(l.handle.stack, base);
+      }
+    });
+  };
+  scan(app._router.stack);
+  console.log("AVAILABLE_ROUTES");
+  routes.sort().forEach(r=>console.log(r));
+}
+
+app.listen(PORT,()=>{
+  console.log(`cluster-orchestrator listening on :${PORT}`);
+  printRoutes();
+  console.log("READY: cluster-orchestrator");
+});
+
+export default app;
+
+src/lib/auth.js
+js
+export function bearerAuth(req,res,next){
+  const header=req.headers['authorization']||'';
+  const token=header.startsWith('Bearer ')?header.slice(7):null;
+  const allow=process.env.AUTH_BEARER_TOKEN||'orchestrator_token_123';
+  if(!token||token!==allow){
+    return res.status(401).json({ok:false,error:{message:"unauthorized"}});
+  }
+  req.user={ok:true,role:"orchestrator"};
+  next();
+}
+
+src/lib/validators.js
+js
+import { z } from 'zod';
+
+export const ClusterCreateSchema=z.object({
+  label:z.string().min(1),
+  personaIds:z.array(z.string()).optional(),
+  accountIds:z.array(z.string()).optional(),
+  jobIds:z.array(z.string()).optional(),
+  meta:z.record(z.any()).optional()
+});
+
+export const ClusterPatchSchema=z.object({
+  label:z.string().optional(),
+  personaIds:z.array(z.string()).optional(),
+  accountIds:z.array(z.string()).optional(),
+  jobIds:z.array(z.string()).optional(),
+  status:z.enum(["draft","active","paused","archived"]).optional(),
+  meta:z.record(z.any()).optional()
+});
+
+export function parse(schema,body){
+  const r=schema.safeParse(body);
+  if(!r.success) return {ok:false,error:r.error.flatten()};
+  return {ok:true,data:r.data};
+}
+
+src/lib/store.js
+js
+import { nanoid } from 'nanoid';
+const clusters=new Map();
+
+export function createCluster(payload){
+  const id=nanoid();
+  const now=new Date().toISOString();
+  const c={id,createdAt:now,updatedAt:now,status:"draft",...payload};
+  clusters.set(id,c);
+  return c;
+}
+export function listClusters(){return Array.from(clusters.values());}
+export function getCluster(id){return clusters.get(id)||null;}
+export function patchCluster(id,patch){
+  const cur=clusters.get(id);if(!cur) return null;
+  const upd={...cur,...patch,updatedAt:new Date().toISOString()};
+  clusters.set(id,upd);return upd;
+}
+export function deleteCluster(id){return clusters.delete(id);}
+
+src/lib/forward.js
+js
+import axios from 'axios';
+export async function safeForward({baseUrl,path,body={},token,attempts=2}){
+  let lastErr=null;
+  for(let i=0;i<=attempts;i++){
+    try{
+      const res=await axios.post(`${baseUrl}${path}`,body,{headers:{Authorization:token?`Bearer ${token}`:undefined,"Content-Type":"application/json"}});
+      return {ok:true,status:res.status,data:res.data};
+    }catch(e){lastErr=e;}
+  }
+  return {ok:false,error:lastErr?.message||"forward_failed"};
+}
+
+src/routes/health.js
+js
+import { Router } from 'express';
+const r=Router();
+r.get('/',(_req,res)=>res.json({ok:true,data:{service:"cluster-orchestrator",status:"healthy"}}));
+export default r;
+
+src/routes/clusters.js
+js
+import { Router } from 'express';
+import { parse,ClusterCreateSchema,ClusterPatchSchema } from '../lib/validators.js';
+import { createCluster,listClusters,getCluster,patchCluster,deleteCluster } from '../lib/store.js';
+
+const r=Router();
+
+r.post('/',(req,res)=>{
+  const v=parse(ClusterCreateSchema,req.body||{});
+  if(!v.ok) return res.status(400).json({ok:false,error:v.error});
+  const c=createCluster(v.data);
+  console.log("[CLUSTER] created",c.id);
+  res.json({ok:true,data:c});
+});
+
+r.get('/',(_req,res)=>res.json({ok:true,data:listClusters()}));
+
+r.get('/:id',(req,res)=>{
+  const c=getCluster(req.params.id);
+  if(!c) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  res.json({ok:true,data:c});
+});
+
+r.patch('/:id',(req,res)=>{
+  const v=parse(ClusterPatchSchema,req.body||{});
+  if(!v.ok) return res.status(400).json({ok:false,error:v.error});
+  const c=patchCluster(req.params.id,v.data);
+  if(!c) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  res.json({ok:true,data:c});
+});
+
+r.delete('/:id',(req,res)=>{
+  const ok=deleteCluster(req.params.id);
+  if(!ok) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  res.json({ok:true,data:{id:req.params.id,deleted:true}});
+});
+
+// Activate
+r.post('/:id/activate',(req,res)=>{
+  const c=getCluster(req.params.id);
+  if(!c) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  const upd=patchCluster(req.params.id,{status:"active"});
+  res.json({ok:true,data:upd});
+});
+
+// Pause
+r.post('/:id/pause',(req,res)=>{
+  const c=getCluster(req.params.id);
+  if(!c) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  const upd=patchCluster(req.params.id,{status:"paused"});
+  res.json({ok:true,data:upd});
+});
+
+// Sync (stub)
+r.post('/:id/sync',(req,res)=>{
+  const c=getCluster(req.params.id);
+  if(!c) return res.status(404).json({ok:false,error:{message:"not_found"}});
+  res.json({ok:true,data:{id:c.id,sync:"ok"}});
+});
+
+export default r;
+
+README.md
+md
+# cluster-orchestrator
+
+Coordinates clusters of personas/accounts/jobs across internal services. Does not automate external sites.
+
+## Env
+- AUTH_BEARER_TOKEN (default `orchestrator_token_123`)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Example
+Create cluster:
+curl -s -X POST https://<your-repl>.replit.app/api/v1/clusters \
+  -H "Authorization: Bearer orchestrator_token_123" -H "Content-Type: application/json" \
+  -d '{"label":"clusterA","personaIds":["p1"],"accountIds":["a1"],"meta":{"topic":"test"}}'
+
+List clusters:
+curl -s -H "Authorization: Bearer orchestrator_token_123" https://<your-repl>.replit.app/api/v1/clusters
+
+Activate:
+curl -s -X POST https://<your-repl>.replit.app/api/v1/clusters/<id>/activate \
+  -H "Authorization: Bearer orchestrator_token_123"

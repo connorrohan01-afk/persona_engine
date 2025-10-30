@@ -1,0 +1,25 @@
+{
+  "app_config": {
+    "value": {
+      "theme": "dark",
+      "notifications": true
+    },
+    "stored_at": "2025-08-31T03:57:56.474239",
+    "type": "dict"
+  },
+  "error_recovery": {
+    "value": "Recovered from error in: http_error",
+    "stored_at": "2025-08-31T04:04:36.583390",
+    "type": "str"
+  },
+  "content_metadata": {
+    "value": {
+      "headline": "Mock AI response to: Write a short tech news headline",
+      "status": "mock",
+      "provider": "mock",
+      "timestamp": "now"
+    },
+    "stored_at": "2025-08-31T04:04:36.590185",
+    "type": "dict"
+  }
+}

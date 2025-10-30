@@ -1,0 +1,45 @@
+{
+  "persona_id": "P0001",
+  "job_id": "J0002",
+  "style": "studio",
+  "count": 4,
+  "seeds": [
+    314454,
+    641309,
+    18406,
+    501822
+  ],
+  "slots": {
+    "outfit": "blue dress",
+    "mood": "confident"
+  },
+  "styleConfig": {
+    "name": "Studio Portrait",
+    "sampler": "DPM++ 2M Karras",
+    "cfg": 7,
+    "steps": 25
+  },
+  "images": [
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0002/studio/image_001.jpg",
+      "seed": 314454,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0002/studio/image_002.jpg",
+      "seed": 641309,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0002/studio/image_003.jpg",
+      "seed": 18406,
+      "size": 70
+    },
+    {
+      "url": "file:///home/runner/workspace/vault/dev/P0001/J0002/studio/image_004.jpg",
+      "seed": 501822,
+      "size": 70
+    }
+  ],
+  "created_at": "2025-09-28T06:42:05.712Z"
+}

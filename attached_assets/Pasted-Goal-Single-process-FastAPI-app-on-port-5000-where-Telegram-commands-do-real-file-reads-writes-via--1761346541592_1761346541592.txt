@@ -1,0 +1,45 @@
+Goal: Single-process FastAPI app on port 5000 where Telegram commands do real file reads/writes via a small SDK that calls Claude. Keep it minimal and deterministic.
+
+Do exactly:
+	1.	Deps: add fastapi, uvicorn, httpx, anthropic (no python-telegram-bot).
+	2.	Files:
+	•	app/server.py – FastAPI, in-memory queue.Queue(), background worker thread, Telegram webhook.
+	•	sdk/runner.py – patch_file(path, goal) using Anthropic; return {ok, lines_changed}.
+	•	utils/files.py – read_text(path), write_text(path,text), sha1(path), git_diff(path,max_lines=120).
+	•	tools/reset_webhook.py – (re)set Telegram webhook to https://<PUBLIC>/api/v1/telegram/{token}.
+	3.	Env: read TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT, ANTHROPIC_API_KEY.
+	4.	Telegram send: simple HTTP POST to
+https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage with chat_id + text.
+	5.	Routes & commands (only these):
+	•	GET /api/v1/health ⇒ {ok:true,queue_depth:int}
+	•	POST /api/v1/telegram/{token} (token must match env)
+Commands parsed from message text:
+	•	/ping ⇒ reply ✅ Direct test pong
+	•	/status ⇒ reply 📊 System OK | Queue: {n}
+	•	/build read <path> ⇒ reply first 1200 chars + SHA1: <hash>
+	•	/build patch <path> ⇒ take next message as the goal text; enqueue {type:"patch", path, goal}; reply 🛠 Queued build: <path>
+Worker: on {type:"patch"} call sdk.runner.patch_file(), then reply with:
+
+✅ Patch Applied
+File: <path>
+Lines changed: <n>
+SHA1: <hash_after>
+
+	6.	Claude call (sdk/runner.py): model claude-3-5-sonnet-20241022. Prompt:
+“Return ONLY the full new file content. File:{path}. Goal:{goal}. Original:\n’’’{original}’’’”
+Write the result verbatim; compute lines changed (simple diff).
+	7.	Startup: start worker thread on app startup; run uvicorn 0.0.0.0:5000.
+	8.	Deliverables: commit files and print to console:
+	•	routes list
+	•	“Worker running”
+	•	webhook URL in use
+
+After build: run python tools/reset_webhook.py, restart. I will test:
+
+/ping
+/build read test_sample.py
+/build patch test_canary.txt
+(next message)
+CANARY: prove write works
+/build read test_canary.txt
+All replies must come from the server and real file edits must be visible via SHA1 change.

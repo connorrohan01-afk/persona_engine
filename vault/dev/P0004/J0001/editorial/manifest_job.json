@@ -1,0 +1,49 @@
+{
+  "id": "J0001",
+  "persona_id": "P0004",
+  "style": "editorial",
+  "count": 3,
+  "slots": {
+    "outfit": "black suit",
+    "mood": "confident",
+    "setting": "set"
+  },
+  "seeds": [
+    2100,
+    2101,
+    2102
+  ],
+  "created_at": "2025-09-28T07:16:38.008907Z",
+  "mode": "fake",
+  "images": [
+    {
+      "id": "J0001_img_1",
+      "url": "https://picsum.photos/512/512?random=2100",
+      "seed": 2100,
+      "prompt": "outfit: black suit, mood: confident, setting: set",
+      "style": "editorial",
+      "filename": "J0001_editorial_001.jpg"
+    },
+    {
+      "id": "J0001_img_2",
+      "url": "https://picsum.photos/512/512?random=2101",
+      "seed": 2101,
+      "prompt": "outfit: black suit, mood: confident, setting: set",
+      "style": "editorial",
+      "filename": "J0001_editorial_002.jpg"
+    },
+    {
+      "id": "J0001_img_3",
+      "url": "https://picsum.photos/512/512?random=2102",
+      "seed": 2102,
+      "prompt": "outfit: black suit, mood: confident, setting: set",
+      "style": "editorial",
+      "filename": "J0001_editorial_003.jpg"
+    }
+  ],
+  "files": [
+    "J0001_editorial_001.jpg",
+    "J0001_editorial_002.jpg",
+    "J0001_editorial_003.jpg"
+  ]
+}

@@ -1,0 +1,75 @@
+Extend PersonaEngine with Warming Scheduler + Rotator. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. All endpoints return stable JSON with ok, mode (“live”|“dry”), and deterministic fields. Integrate with existing branches: Account Sessions + Proxy + Captcha, Reddit, Images, Vaults. Purpose: automatically warm accounts with low-risk actions, rotate proxies/sessions, respect rate limits, and schedule randomized posting windows.
+
+Add/Modify files:
+	•	app/routes/warming.py — warming plans, schedule control, run-now, status.
+	•	app/models_warming.py — SQLModel: WarmPlan, WarmAction, WarmRun, WarmLog.
+	•	app/warming_engine.py — core scheduler/executor with jitter, cooldowns, guardrails.
+	•	app/rand.py — helpers for weighted random, jitter windows, human timing.
+	•	app/config.py — add warming envs.
+
+Environment variables:
+WARM_DEFAULT_WINDOW=08:00-22:00 (local TZ or UTC if not set)
+WARM_JITTER_SECONDS_MIN=15
+WARM_JITTER_SECONDS_MAX=120
+WARM_MAX_CONCURRENCY=4
+WARM_MAX_ACTIONS_PER_RUN=20
+WARM_MINUTES_BETWEEN_SAME_ACCOUNT=30
+DRY_DEFAULT=1 (if set, engine runs in dry unless request overrides)
+If keys or dependencies missing, run in mode:“dry”.
+
+Data models (SQLModel):
+WarmPlan(id, tenant_id, platform, account_id, enabled, window_start, window_end, actions_per_day, created_at, updated_at)
+WarmAction(id, plan_id, kind, params_json, weight, enabled, created_at)  // examples of kind: “view_sub”, “upvote”, “comment_short”, “post_text”, “post_image”, “save_post”
+WarmRun(id, plan_id, started_at, finished_at, actions_attempted, actions_succeeded, mode)
+WarmLog(id, run_id, account_id, action_kind, status(“ok”|“skipped”|“failed”), error, meta_json, ts)
+
+Warming engine (app/warming_engine.py) behavior:
+	•	Select eligible plans: enabled=1, current time inside [window_start, window_end], respect WARM_MINUTES_BETWEEN_SAME_ACCOUNT.
+	•	Build action pick-list from WarmAction rows with weight and enabled=1; sample up to WARM_MAX_ACTIONS_PER_RUN per run.
+	•	Apply human timing: add random jitter between actions using JITTER MIN/MAX.
+	•	Guardrails: if Reddit provider returns rate_limited or captcha_required → stop further actions for that account and log with status=“failed” and error code. Do not ban-loop.
+	•	Proxy/session: ensure session for account exists; if missing, call Accounts session load; if no proxy assigned, assign least-used proxy before first network action.
+	•	Dry mode: if DRY_DEFAULT=1 or request.dry=true, simulate success with realistic shapes and log status=“skipped”.
+	•	Idempotency: WarmRun may be safely retried; logs accumulate with unique id.
+
+API endpoints (all JSON bodies inline as plain text):
+	1.	POST /api/v1/warm/plan/create
+Request: { “tenant_id”:“owner”, “platform”:“reddit”, “account_id”:“acc_123”, “enabled”:true, “window_start”:“08:00”, “window_end”:“22:00”, “actions_per_day”:10, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “plan_id”:“wp_001” }
+	2.	POST /api/v1/warm/plan/add-action
+Request: { “plan_id”:“wp_001”, “kind”:“view_sub”, “params”:{“subreddit”:“test”,“limit”:5,“sort”:“hot”}, “weight”:3, “enabled”:true }
+Response: { “ok”:true, “mode”:“live”, “action_id”:“wa_101” }
+	3.	POST /api/v1/warm/plan/add-action
+Request: { “plan_id”:“wp_001”, “kind”:“post_text”, “params”:{“subreddit”:“test”,“title”:“hey there”,“body”:“just warming”}, “weight”:1, “enabled”:true }
+Response: { “ok”:true, “mode”:“live”, “action_id”:“wa_102” }
+	4.	POST /api/v1/warm/run-now
+Request: { “tenant_id”:“owner”, “plan_id”:“wp_001”, “limit”:6, “dry”:true }
+Response: { “ok”:true, “mode”:“dry”, “run_id”:“wr_555”, “attempted”:6, “succeeded”:6, “logs”:[{“action_kind”:“view_sub”,“status”:“skipped”},{“action_kind”:“post_text”,“status”:“skipped”}] }
+	5.	POST /api/v1/warm/run-cron
+Request: { “tenant_id”:“owner”, “limit_plans”:5, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “runs”:[{“plan_id”:“wp_001”,“run_id”:“wr_556”,“attempted”:5,“succeeded”:4}] }
+	6.	GET /api/v1/warm/plan?id=wp_001
+Response: { “ok”:true, “mode”:“live”, “plan”:{“id”:“wp_001”,“enabled”:true,“window_start”:“08:00”,“window_end”:“22:00”,“actions_per_day”:10}, “actions”:[{“id”:“wa_101”,“kind”:“view_sub”,“weight”:3},{“id”:“wa_102”,“kind”:“post_text”,“weight”:1}] }
+	7.	POST /api/v1/warm/plan/toggle
+Request: { “plan_id”:“wp_001”, “enabled”:false }
+Response: { “ok”:true, “mode”:“live”, “plan_id”:“wp_001”, “enabled”:false }
+	8.	GET /api/v1/warm/run/status?id=wr_556
+Response: { “ok”:true, “mode”:“live”, “run”:{“id”:“wr_556”,“attempted”:5,“succeeded”:4,“finished_at”:“2025-09-21T10:22:00Z”}, “logs”:[{“action_kind”:“view_sub”,“status”:“ok”},{“action_kind”:“post_text”,“status”:“failed”,“error”:“rate_limited”}] }
+
+Action execution mapping (engine uses existing branches):
+	•	view_sub → reddit.scrape_sub
+	•	upvote → provider lightweight vote (dry-only if no auth)
+	•	comment_short → provider comment with 1–2 sentence template; skip if STRICT_MOD=true
+	•	post_text/post_image → reddit.post (already implemented)
+	•	save_post → provider save endpoint or mock
+
+Scheduler notes:
+	•	You’ll later hook /api/v1/warm/run-cron from n8n on a 5–10 minute Cron or use Replit background tasks; both are supported.
+	•	Concurrency controlled by WARM_MAX_CONCURRENCY; engine batches plans safely.
+
+Testing quick calls you can paste into an n8n HTTP node body field:
+create plan: { “method”:“POST”, “url”:“https://YOUR_APP/api/v1/warm/plan/create”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“platform”:“reddit”,“account_id”:“acc_123”,“enabled”:true,“window_start”:“08:00”,“window_end”:“22:00”,“actions_per_day”:10,“dry”:true} }
+add action view_sub: { “method”:“POST”, “url”:“https://YOUR_APP/api/v1/warm/plan/add-action”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“plan_id”:“wp_001”,“kind”:“view_sub”,“params”:{“subreddit”:“test”,“limit”:5,“sort”:“hot”},“weight”:3,“enabled”:true} }
+run now (dry): { “method”:“POST”, “url”:“https://YOUR_APP/api/v1/warm/run-now”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“plan_id”:“wp_001”,“limit”:6,“dry”:true} }
+
+Deliverable: production-ready warming scheduler with randomization, guardrails, dry/live modes, logs, and clean JSON. It should call your Reddit and Accounts/Proxy branches as needed and be safe to trigger via n8n Cron.

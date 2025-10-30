@@ -1,0 +1,6 @@
+{
+  "daily_usd_cap": 10.0,
+  "max_concurrency": 5,
+  "token_cost_per_1k": 0.003,
+  "alert_threshold": 0.8
+}

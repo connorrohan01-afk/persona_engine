@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+
+{% block title %}Platforms - Content Automation Platform{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-plug me-2"></i>Platform Connections
+        </h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-list me-2"></i>Available Platforms
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    {% for connection in connections %}
+                    <div class="col-md-6 mb-4">
+                        <div class="card border {% if connection.is_connected %}border-success{% else %}border-secondary{% endif %}">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="flex-grow-1">
+                                        <h5 class="card-title d-flex align-items-center">
+                                            {% if connection.platform_name == 'twitter' %}
+                                                <i class="fab fa-twitter text-info me-2"></i>
+                                            {% elif connection.platform_name == 'facebook' %}
+                                                <i class="fab fa-facebook text-primary me-2"></i>
+                                            {% elif connection.platform_name == 'instagram' %}
+                                                <i class="fab fa-instagram text-danger me-2"></i>
+                                            {% elif connection.platform_name == 'linkedin' %}
+                                                <i class="fab fa-linkedin text-primary me-2"></i>
+                                            {% elif connection.platform_name == 'blog' %}
+                                                <i class="fas fa-blog text-warning me-2"></i>
+                                            {% else %}
+                                                <i class="fas fa-globe me-2"></i>
+                                            {% endif %}
+                                            {{ connection.platform_name.title() }}
+                                        </h5>
+                                        
+                                        <div class="mb-3">
+                                            {% if connection.is_connected %}
+                                                <span class="badge bg-success">
+                                                    <i class="fas fa-check me-1"></i>Connected
+                                                </span>
+                                            {% else %}
+                                                <span class="badge bg-secondary">
+                                                    <i class="fas fa-times me-1"></i>Disconnected
+                                                </span>
+                                            {% endif %}
+                                        </div>
+                                        
+                                        {% if connection.last_used %}
+                                        <small class="text-muted">
+                                            Last used: {{ connection.last_used.strftime('%Y-%m-%d %H:%M') }}
+                                        </small>
+                                        {% endif %}
+                                        
+                                        <p class="card-text mt-2">
+                                            {% if connection.platform_name == 'twitter' %}
+                                                Share short, engaging tweets with your audience.
+                                            {% elif connection.platform_name == 'facebook' %}
+                                                Post updates and engage with your Facebook community.
+                                            {% elif connection.platform_name == 'instagram' %}
+                                                Share visual content and stories with followers.
+                                            {% elif connection.platform_name == 'linkedin' %}
+                                                Professional networking and industry insights.
+                                            {% elif connection.platform_name == 'blog' %}
+                                                Publish long-form content and articles.
+                                            {% else %}
+                                                Connect and share content on this platform.
+                                            {% endif %}
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                <div class="d-grid">
+                                    <button class="btn {% if connection.is_connected %}btn-outline-danger{% else %}btn-outline-success{% endif %} toggle-platform"
+                                            data-platform-id="{{ connection.id }}">
+                                        {% if connection.is_connected %}
+                                            <i class="fas fa-unlink me-2"></i>Disconnect
+                                        {% else %}
+                                            <i class="fas fa-link me-2"></i>Connect
+                                        {% endif %}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Connection Info -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-info-circle me-2"></i>Connection Info
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <i class="fas fa-lightbulb me-2"></i>
+                    <strong>MVP Notice:</strong> Platform connections are currently simulated for demonstration purposes. 
+                    In production, these would integrate with actual social media APIs.
+                </div>
+                
+                <h6 class="fw-bold">Benefits of Connecting Platforms:</h6>
+                <ul class="list-unstyled">
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Automated posting to multiple platforms
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Centralized content management
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Unified analytics dashboard
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Scheduled content delivery
+                    </li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- Connection Statistics -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-bar me-2"></i>Connection Stats
+                </h5>
+            </div>
+            <div class="card-body">
+                {% set connected_count = connections | selectattr('is_connected') | list | length %}
+                {% set total_count = connections | length %}
+                
+                <div class="text-center mb-3">
+                    <h3 class="text-primary">{{ connected_count }}/{{ total_count }}</h3>
+                    <p class="text-muted">Platforms Connected</p>
+                </div>
+                
+                <div class="progress mb-3" style="height: 20px;">
+                    <div class="progress-bar bg-success" 
+                         style="width: {{ (connected_count / total_count * 100) if total_count > 0 else 0 }}%">
+                        {{ "%.0f"|format((connected_count / total_count * 100) if total_count > 0 else 0) }}%
+                    </div>
+                </div>
+                
+                {% if connected_count < total_count %}
+                <div class="alert alert-warning small">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Connect more platforms to maximize your content reach!
+                </div>
+                {% else %}
+                <div class="alert alert-success small">
+                    <i class="fas fa-check-circle me-2"></i>
+                    All platforms connected! You're ready to automate.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Connection Success/Error Modal -->
+<div class="modal fade" id="connectionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="connectionModalTitle">Platform Connection</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="connectionModalBody">
+                <!-- Content will be populated by JavaScript -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Toggle platform connection
+    document.querySelectorAll('.toggle-platform').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const platformId = this.dataset.platformId;
+            const isConnecting = this.textContent.trim().includes('Connect');
+            
+            // Disable button and show loading
+            this.disabled = true;
+            const originalText = this.innerHTML;
+            this.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+            
+            try {
+                const response = await fetch(`/api/toggle-platform/${platformId}`, {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Update button appearance
+                    if (result.is_connected) {
+                        this.className = 'btn btn-outline-danger toggle-platform';
+                        this.innerHTML = '<i class="fas fa-unlink me-2"></i>Disconnect';
+                        
+                        // Update card border
+                        this.closest('.card').className = 'card border border-success';
+                        
+                        // Update status badge
+                        const badge = this.closest('.card-body').querySelector('.badge');
+                        badge.className = 'badge bg-success';
+                        badge.innerHTML = '<i class="fas fa-check me-1"></i>Connected';
+                        
+                        showConnectionModal('Connected Successfully!', 
+                            'Platform has been connected and is ready for content publishing.', 'success');
+                    } else {
+                        this.className = 'btn btn-outline-success toggle-platform';
+                        this.innerHTML = '<i class="fas fa-link me-2"></i>Connect';
+                        
+                        // Update card border
+                        this.closest('.card').className = 'card border border-secondary';
+                        
+                        // Update status badge
+                        const badge = this.closest('.card-body').querySelector('.badge');
+                        badge.className = 'badge bg-secondary';
+                        badge.innerHTML = '<i class="fas fa-times me-1"></i>Disconnected';
+                        
+                        showConnectionModal('Disconnected Successfully!', 
+                            'Platform has been disconnected from your account.', 'warning');
+                    }
+                    
+                    // Update connection statistics
+                    updateConnectionStats();
+                } else {
+                    showAlert('Error: ' + result.error, 'danger');
+                    this.innerHTML = originalText;
+                }
+            } catch (error) {
+                showAlert('Network error: ' + error.message, 'danger');
+                this.innerHTML = originalText;
+            } finally {
+                this.disabled = false;
+            }
+        });
+    });
+    
+    function showConnectionModal(title, message, type) {
+        const modal = document.getElementById('connectionModal');
+        const modalTitle = document.getElementById('connectionModalTitle');
+        const modalBody = document.getElementById('connectionModalBody');
+        
+        modalTitle.textContent = title;
+        
+        const iconClass = type === 'success' ? 'fa-check-circle text-success' : 
+                         type === 'warning' ? 'fa-exclamation-triangle text-warning' : 
+                         'fa-times-circle text-danger';
+        
+        modalBody.innerHTML = `
+            <div class="text-center">
+                <i class="fas ${iconClass} fa-3x mb-3"></i>
+                <p>${message}</p>
+            </div>
+        `;
+        
+        new bootstrap.Modal(modal).show();
+    }
+    
+    function updateConnectionStats() {
+        // Count connected platforms
+        const connectedBadges = document.querySelectorAll('.badge.bg-success');
+        const totalCards = document.querySelectorAll('.toggle-platform').length;
+        const connectedCount = connectedBadges.length;
+        
+        // Update stats in sidebar (if exists)
+        const statsHeader = document.querySelector('.text-primary');
+        if (statsHeader) {
+            statsHeader.textContent = `${connectedCount}/${totalCards}`;
+        }
+        
+        // Update progress bar
+        const progressBar = document.querySelector('.progress-bar');
+        if (progressBar) {
+            const percentage = totalCards > 0 ? (connectedCount / totalCards * 100) : 0;
+            progressBar.style.width = `${percentage}%`;
+            progressBar.textContent = `${Math.round(percentage)}%`;
+        }
+        
+        // Update alert
+        const alertDiv = document.querySelector('.alert-warning, .alert-success');
+        if (alertDiv) {
+            if (connectedCount < totalCards) {
+                alertDiv.className = 'alert alert-warning small';
+                alertDiv.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Connect more platforms to maximize your content reach!';
+            } else {
+                alertDiv.className = 'alert alert-success small';
+                alertDiv.innerHTML = '<i class="fas fa-check-circle me-2"></i>All platforms connected! You\'re ready to automate.';
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,39 @@
+{
+  "id": "J0001",
+  "persona_id": "P0004",
+  "style": "street",
+  "count": 2,
+  "slots": {
+    "outfit": "hoodie",
+    "mood": "energetic",
+    "setting": "night"
+  },
+  "seeds": [
+    2100,
+    2101
+  ],
+  "created_at": "2025-10-24T21:09:50.731716Z",
+  "mode": "fake",
+  "images": [
+    {
+      "id": "J0001_img_1",
+      "url": "https://picsum.photos/512/512?random=2100",
+      "seed": 2100,
+      "prompt": "outfit: hoodie, mood: energetic, setting: night",
+      "style": "street",
+      "filename": "J0001_street_001.jpg"
+    },
+    {
+      "id": "J0001_img_2",
+      "url": "https://picsum.photos/512/512?random=2101",
+      "seed": 2101,
+      "prompt": "outfit: hoodie, mood: energetic, setting: night",
+      "style": "street",
+      "filename": "J0001_street_002.jpg"
+    }
+  ],
+  "files": [
+    "J0001_street_001.jpg",
+    "J0001_street_002.jpg"
+  ]
+}

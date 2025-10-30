@@ -1,0 +1,167 @@
+[
+  {
+    "id": "J0001",
+    "title": "Studio Portrait Collection",
+    "description": "Professional portrait session with natural lighting",
+    "style": {
+      "lighting": "natural",
+      "background": "studio",
+      "mood": "professional"
+    },
+    "images": [
+      "img1.jpg",
+      "img2.jpg",
+      "img3.jpg"
+    ],
+    "created_at": "2025-01-01T00:00:00Z"
+  },
+  {
+    "id": "J0002",
+    "title": "Creative Brand Shoot",
+    "description": "Dynamic brand imagery for social media campaign",
+    "style": {
+      "lighting": "dramatic",
+      "background": "colorful",
+      "mood": "energetic"
+    },
+    "images": [
+      "brand1.jpg",
+      "brand2.jpg"
+    ],
+    "created_at": "2025-01-01T00:00:00Z"
+  },
+  {
+    "id": "J0003",
+    "title": "Studio Collection for P0003",
+    "description": "Generated 6 images with studio style",
+    "style": {
+      "outfit": "red dress",
+      "mood": "playful",
+      "setting": "loft"
+    },
+    "images": [
+      "J0003_studio_001.jpg",
+      "J0003_studio_002.jpg",
+      "J0003_studio_003.jpg",
+      "J0003_studio_004.jpg",
+      "J0003_studio_005.jpg",
+      "J0003_studio_006.jpg"
+    ],
+    "created_at": "2025-09-28T07:16:34.023329Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Street Collection for P0003",
+    "description": "Generated 4 images with street style",
+    "style": {
+      "outfit": "denim",
+      "mood": "casual",
+      "setting": "downtown"
+    },
+    "images": [
+      "J0001_street_001.jpg",
+      "J0001_street_002.jpg",
+      "J0001_street_003.jpg",
+      "J0001_street_004.jpg"
+    ],
+    "created_at": "2025-09-28T07:16:35.841594Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Editorial Collection for P0004",
+    "description": "Generated 3 images with editorial style",
+    "style": {
+      "outfit": "black suit",
+      "mood": "confident",
+      "setting": "set"
+    },
+    "images": [
+      "J0001_editorial_001.jpg",
+      "J0001_editorial_002.jpg",
+      "J0001_editorial_003.jpg"
+    ],
+    "created_at": "2025-09-28T07:16:38.008907Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Studio Collection for P9999",
+    "description": "Generated 2 images with studio style",
+    "style": {},
+    "images": [
+      "J0001_studio_001.jpg",
+      "J0001_studio_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:05:57.076967Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Street Collection for P0004",
+    "description": "Generated 2 images with street style",
+    "style": {
+      "outfit": "hoodie",
+      "mood": "energetic",
+      "setting": "night"
+    },
+    "images": [
+      "J0001_street_001.jpg",
+      "J0001_street_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:06:02.360509Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Boudoir_Soft Collection for P0003",
+    "description": "Generated 2 images with boudoir_soft style",
+    "style": {
+      "outfit": "silk",
+      "mood": "soft",
+      "setting": "studio"
+    },
+    "images": [
+      "J0001_boudoir_soft_001.jpg",
+      "J0001_boudoir_soft_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:06:02.370068Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Studio Collection for P9999",
+    "description": "Generated 2 images with studio style",
+    "style": {},
+    "images": [
+      "J0001_studio_001.jpg",
+      "J0001_studio_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:08:17.421754Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Street Collection for P0004",
+    "description": "Generated 2 images with street style",
+    "style": {
+      "outfit": "hoodie",
+      "mood": "energetic",
+      "setting": "night"
+    },
+    "images": [
+      "J0001_street_001.jpg",
+      "J0001_street_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:09:50.731716Z"
+  },
+  {
+    "id": "J0001",
+    "title": "Boudoir_Soft Collection for P0003",
+    "description": "Generated 2 images with boudoir_soft style",
+    "style": {
+      "outfit": "silk",
+      "mood": "soft",
+      "setting": "studio"
+    },
+    "images": [
+      "J0001_boudoir_soft_001.jpg",
+      "J0001_boudoir_soft_002.jpg"
+    ],
+    "created_at": "2025-10-24T21:09:50.733335Z"
+  }
+]

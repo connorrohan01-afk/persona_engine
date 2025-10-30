@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Content Automation Platform{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-tachometer-alt me-2"></i>Dashboard
+        </h1>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card bg-primary">
+            <div class="card-body text-center">
+                <i class="fas fa-file-alt fa-2x mb-2"></i>
+                <h4>{{ total_content }}</h4>
+                <p class="mb-0">Total Content</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-success">
+            <div class="card-body text-center">
+                <i class="fas fa-check-circle fa-2x mb-2"></i>
+                <h4>{{ published_content }}</h4>
+                <p class="mb-0">Published</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-warning">
+            <div class="card-body text-center">
+                <i class="fas fa-clock fa-2x mb-2"></i>
+                <h4>{{ scheduled_content }}</h4>
+                <p class="mb-0">Scheduled</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-info">
+            <div class="card-body text-center">
+                <i class="fas fa-plug fa-2x mb-2"></i>
+                <h4>{{ connected_platforms }}</h4>
+                <p class="mb-0">Connected Platforms</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-bolt me-2"></i>Quick Actions
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <a href="{{ url_for('generate_page') }}" class="btn btn-primary btn-lg w-100">
+                            <i class="fas fa-magic me-2"></i>Generate New Content
+                        </a>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <a href="{{ url_for('schedule_page') }}" class="btn btn-secondary btn-lg w-100">
+                            <i class="fas fa-calendar me-2"></i>Schedule Posts
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Content -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-history me-2"></i>Recent Content
+                </h5>
+                <a href="{{ url_for('library') }}" class="btn btn-sm btn-outline-primary">
+                    View All
+                </a>
+            </div>
+            <div class="card-body">
+                {% if recent_content %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Title</th>
+                                    <th>Platform</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for content in recent_content %}
+                                <tr>
+                                    <td>{{ content.title }}</td>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ content.platform.title() }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% set status_colors = {
+                                            'draft': 'secondary',
+                                            'scheduled': 'warning',
+                                            'published': 'success',
+                                            'failed': 'danger'
+                                        } %}
+                                        <span class="badge bg-{{ status_colors.get(content.status, 'secondary') }}">
+                                            {{ content.status.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ content.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <a href="{{ url_for('edit_content', content_id=content.id) }}" 
+                                               class="btn btn-outline-primary">
+                                                <i class="fas fa-edit"></i>
+                                            </a>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-file-alt fa-3x text-muted mb-3"></i>
+                        <h5>No content yet</h5>
+                        <p class="text-muted">Get started by generating your first piece of content!</p>
+                        <a href="{{ url_for('generate_page') }}" class="btn btn-primary">
+                            <i class="fas fa-magic me-2"></i>Generate Content
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

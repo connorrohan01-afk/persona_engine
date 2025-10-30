@@ -1,0 +1,379 @@
+You are my Replit build engineer. Create a microservice named persona-image-kit (Node.js + Express) for safe, local-only image utilities used by personas: generate avatars (solid bg + initials), overlay text on a canvas, resize/crop uploaded images, and return base64 or downloadable files. This service MUST NOT call external image APIs or any third-party site. All work is done in-process.
+
+Requirements:
+	•	Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, jimp.
+	•	Structure: server.js, src/lib/{auth,validators,fsio}.js, src/routes/{images,renders,health}.js, README.md, package.json.
+	•	Auth: Bearer header via AUTH_BEARER_TOKEN (default: img_token_123).
+	•	Storage: write generated files to ./public/img/.png and also return base64 if requested.
+	•	Endpoints under /api/v1; include /api/v1/health (no auth) and print AVAILABLE_ROUTES at boot.
+	•	Rate limit: 200 req / 5 min. JSON envelope: { ok:true|false, data?, error? }.
+	•	Features:
+• POST /images/avatar  -> { initials, bg?, fg?, size? } -> PNG avatar
+• POST /images/overlay -> { text, width, height, bg?, fg?, fontSize? } -> PNG with centered text
+• POST /images/transform -> { imageBase64, ops:[ {type:“resize”| “crop”, w?, h?, x?, y?} ], output?: “base64”|“file” }
+• POST /renders/meme -> { topText?, bottomText?, width?, height?, bg? } simple two-line meme style
+	•	Security: no remote fetching; only accepts provided base64 or generates from scratch. Reject URLs.
+	•	README with curl examples.
+
+Files to create (full contents):
+
+package.json
+{
+“name”: “persona-image-kit”,
+“private”: true,
+“type”: “module”,
+“scripts”: {
+“dev”: “node server.js”
+},
+“dependencies”: {
+“express”: “^4.19.2”,
+“helmet”: “^7.0.0”,
+“morgan”: “^1.10.0”,
+“express-rate-limit”: “^7.2.0”,
+“zod”: “^3.23.8”,
+“nanoid”: “^5.0.7”,
+“jimp”: “^0.22.12”
+}
+}
+
+server.js
+import express from ‘express’;
+import helmet from ‘helmet’;
+import morgan from ‘morgan’;
+import path from ‘path’;
+import { fileURLToPath } from ‘url’;
+import rateLimit from ‘express-rate-limit’;
+import { bearerAuth } from ‘./src/lib/auth.js’;
+import imagesRouter from ‘./src/routes/images.js’;
+import rendersRouter from ‘./src/routes/renders.js’;
+import healthRouter from ‘./src/routes/health.js’;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan(‘tiny’));
+app.use(express.json({ limit: ‘2mb’ }));
+app.use(’/public’, express.static(path.join(__dirname, ‘public’)));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 200, standardHeaders: true });
+app.use(limiter);
+
+// Health (no auth)
+app.use(’/api/v1/health’, healthRouter);
+
+// Protected routes
+app.use(’/api/v1/images’, bearerAuth, imagesRouter);
+app.use(’/api/v1/renders’, bearerAuth, rendersRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok:false, error:{ message:‘not_found’ }}));
+
+function printRoutes() {
+const routes = [];
+const push = (m, base) => {
+const methods = Object.keys(m.route.methods).map(x=>x.toUpperCase()).join(’,’);
+routes.push(${methods.padEnd(6)} ${base}${m.route.path});
+};
+app._router.stack.forEach(layer => {
+if (layer.route?.path) {
+const methods = Object.keys(layer.route.methods).map(x=>x.toUpperCase()).join(’,’);
+routes.push(${methods.padEnd(6)} ${layer.route.path});
+} else if (layer.name === ‘router’ && layer.handle.stack) {
+const base = (layer.regexp?.toString().match(/^/^\(.*?)\//)?.[1] || ‘’).replace(/\//g,’/’);
+layer.handle.stack.forEach(h => h.route && push(h, /${base}));
+}
+});
+console.log(‘AVAILABLE_ROUTES’);
+routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+console.log(persona-image-kit listening on :${PORT});
+printRoutes();
+console.log(‘READY’);
+});
+
+export default app;
+
+src/lib/auth.js
+export function bearerAuth(req, res, next) {
+const header = req.headers[‘authorization’] || ‘’;
+const token = header.startsWith(’Bearer ’) ? header.slice(7) : null;
+const allow = process.env.AUTH_BEARER_TOKEN || ‘img_token_123’;
+if (!token || token !== allow) {
+return res.status(401).json({ ok:false, error:{ message:‘unauthorized’ }});
+}
+req.user = { ok:true, sandbox:true };
+next();
+}
+
+src/lib/validators.js
+import { z } from ‘zod’;
+
+export const AvatarSchema = z.object({
+initials: z.string().min(1).max(4),
+size: z.number().int().min(64).max(1024).default(512),
+bg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#111827’),
+fg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#F9FAFB’)
+});
+
+export const OverlaySchema = z.object({
+text: z.string().min(1),
+width: z.number().int().min(64).max(2048),
+height: z.number().int().min(64).max(2048),
+bg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#0B1020’),
+fg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#E5E7EB’),
+fontSize: z.number().int().min(8).max(256).default(42)
+});
+
+export const TransformSchema = z.object({
+imageBase64: z.string().min(20), // “data:image/png;base64,…” or raw base64
+ops: z.array(z.object({
+type: z.enum([‘resize’,‘crop’]),
+w: z.number().int().optional(),
+h: z.number().int().optional(),
+x: z.number().int().optional(),
+y: z.number().int().optional()
+})).min(1),
+output: z.enum([‘base64’,‘file’]).default(‘file’)
+});
+
+export const MemeSchema = z.object({
+topText: z.string().optional(),
+bottomText: z.string().optional(),
+width: z.number().int().min(128).max(2048).default(800),
+height: z.number().int().min(128).max(2048).default(800),
+bg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#000000’),
+fg: z.string().regex(/^#?[0-9a-fA-F]{6}$/).default(’#FFFFFF’)
+});
+
+export function parse(schema, body) {
+const r = schema.safeParse(body);
+if (!r.success) return { ok:false, error:r.error.flatten() };
+return { ok:true, data:r.data };
+}
+
+src/lib/fsio.js
+import fs from ‘fs’;
+import path from ‘path’;
+import { fileURLToPath } from ‘url’;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.join(__dirname, ‘../../public/img’);
+
+export function ensureDirs() {
+if (!fs.existsSync(path.join(__dirname, ‘../../public’))) fs.mkdirSync(path.join(__dirname, ‘../../public’));
+if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT);
+}
+ensureDirs();
+
+export function filePathFor(id) {
+return path.join(ROOT, ${id}.png);
+}
+
+export function toDataUrl(buf) {
+const base64 = buf.toString(‘base64’);
+return data:image/png;base64,${base64};
+}
+
+src/routes/health.js
+import { Router } from ‘express’;
+const r = Router();
+r.get(’/’, (_req, res) => res.json({ ok:true, data:{ service:‘persona-image-kit’, status:‘healthy’ }}));
+export default r;
+
+src/routes/images.js
+import { Router } from ‘express’;
+import Jimp from ‘jimp’;
+import { nanoid } from ‘nanoid’;
+import { parse, AvatarSchema, OverlaySchema, TransformSchema } from ‘../lib/validators.js’;
+import { filePathFor, toDataUrl } from ‘../lib/fsio.js’;
+
+function hex(c){ return c.startsWith(’#’) ? c : #${c}; }
+
+const r = Router();
+
+// POST /images/avatar
+r.post(’/avatar’, async (req, res) => {
+const v = parse(AvatarSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error:v.error });
+
+const { initials, size, bg, fg } = v.data;
+const id = nanoid();
+const img = new Jimp(size, size, hex(bg));
+const font = await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
+
+const text = initials.toUpperCase();
+const scale = Math.max(32, Math.floor(size * 0.28));
+const customFont = await Jimp.loadFont(scale >= 128 ? Jimp.FONT_SANS_128_WHITE :
+scale >= 64  ? Jimp.FONT_SANS_64_WHITE  :
+Jimp.FONT_SANS_32_WHITE);
+const textW = Jimp.measureText(customFont, text);
+const textH = Jimp.measureTextHeight(customFont, text, size);
+const x = (size - textW) / 2;
+const y = (size - textH) / 2;
+img.print(customFont, x, y, { text, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE }, textW, textH);
+
+// tint to requested fg by drawing text color overlay
+// (Jimp fonts are white; apply color with composite colorize)
+img.color([{ apply:‘mix’, params:[hex(fg), 100] }]); // subtle tint
+
+await img.writeAsync(filePathFor(id));
+const buf = await img.getBufferAsync(Jimp.MIME_PNG);
+res.json({ ok:true, data:{ id, file:/public/img/${id}.png, base64: toDataUrl(buf) }});
+});
+
+// POST /images/overlay
+r.post(’/overlay’, async (req, res) => {
+const v = parse(OverlaySchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error:v.error });
+const { text, width, height, bg, fg, fontSize } = v.data;
+
+const id = nanoid();
+const img = new Jimp(width, height, hex(bg));
+const font = await Jimp.loadFont(
+fontSize >= 128 ? Jimp.FONT_SANS_128_WHITE :
+fontSize >= 64  ? Jimp.FONT_SANS_64_WHITE  : Jimp.FONT_SANS_32_WHITE
+);
+const tw = Jimp.measureText(font, text);
+const th = Jimp.measureTextHeight(font, text, width);
+const x = (width - tw) / 2;
+const y = (height - th) / 2;
+
+img.print(font, x, y, { text, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE }, tw, th);
+// recolor overlay text by mixing a layer; simple approach:
+img.color([{ apply:‘mix’, params:[hex(fg), 25] }]);
+
+await img.writeAsync(filePathFor(id));
+const buf = await img.getBufferAsync(Jimp.MIME_PNG);
+res.json({ ok:true, data:{ id, file:/public/img/${id}.png, base64: toDataUrl(buf) }});
+});
+
+// POST /images/transform
+r.post(’/transform’, async (req, res) => {
+const v = parse(TransformSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error:v.error });
+
+const { imageBase64, ops, output } = v.data;
+const raw = imageBase64.replace(/^data:image/\w+;base64,/, ‘’);
+const buf = Buffer.from(raw, ‘base64’);
+let img = await Jimp.read(buf);
+
+for (const op of ops) {
+if (op.type === ‘resize’) {
+img = img.resize(op.w || img.getWidth(), op.h || img.getHeight());
+} else if (op.type === ‘crop’) {
+const x = op.x ?? 0, y = op.y ?? 0, w = op.w ?? img.getWidth(), h = op.h ?? img.getHeight();
+img = img.crop(x, y, w, h);
+}
+}
+
+const id = nanoid();
+await img.writeAsync(filePathFor(id));
+if (output === ‘base64’) {
+const out = await img.getBufferAsync(Jimp.MIME_PNG);
+return res.json({ ok:true, data:{ id, base64: data:image/png;base64,${out.toString('base64')} }});
+}
+res.json({ ok:true, data:{ id, file:/public/img/${id}.png }});
+});
+
+export default r;
+
+src/routes/renders.js
+import { Router } from ‘express’;
+import Jimp from ‘jimp’;
+import { nanoid } from ‘nanoid’;
+import { parse, MemeSchema } from ‘../lib/validators.js’;
+import { filePathFor, toDataUrl } from ‘../lib/fsio.js’;
+
+function hex(c){ return c.startsWith(’#’) ? c : #${c}; }
+
+const r = Router();
+
+// POST /renders/meme
+r.post(’/meme’, async (req, res) => {
+const v = parse(MemeSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error:v.error });
+
+const { topText = ‘’, bottomText = ‘’, width, height, bg, fg } = v.data;
+const id = nanoid();
+const img = new Jimp(width, height, hex(bg));
+
+const font = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
+const margin = Math.round(height * 0.05);
+const boxWidth = width - margin * 2;
+
+// Top
+if (topText) {
+const th = Jimp.measureTextHeight(font, topText, boxWidth);
+img.print(font, margin, margin, { text: topText, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_TOP }, boxWidth, th);
+}
+// Bottom
+if (bottomText) {
+const bh = Jimp.measureTextHeight(font, bottomText, boxWidth);
+img.print(font, margin, height - bh - margin, { text: bottomText, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_BOTTOM }, boxWidth, bh);
+}
+
+// Tint to fg
+img.color([{ apply:‘mix’, params:[hex(fg), 15] }]);
+
+await img.writeAsync(filePathFor(id));
+const buf = await img.getBufferAsync(Jimp.MIME_PNG);
+res.json({ ok:true, data:{ id, file:/public/img/${id}.png, base64: toDataUrl(buf) }});
+});
+
+export default r;
+
+README.md
+
+persona-image-kit
+
+Local-only image tools for personas: avatars, text overlays, simple transforms, and a basic meme renderer. No external APIs.
+
+Env
+	•	AUTH_BEARER_TOKEN (default: img_token_123)
+	•	PORT=3000
+
+Run
+
+npm run dev
+
+Health (no auth)
+
+curl -s https://.replit.app/api/v1/health
+
+Auth header
+
+Authorization: Bearer img_token_123
+
+Examples
+
+Avatar
+
+curl -s -X POST https://.replit.app/api/v1/images/avatar 
+-H “Authorization: Bearer img_token_123” -H “Content-Type: application/json” 
+-d ‘{“initials”:“KD”,“size”:512,“bg”:”#111827”,“fg”:”#F9FAFB”}’ | jq .
+
+Overlay
+
+curl -s -X POST https://.replit.app/api/v1/images/overlay 
+-H “Authorization: Bearer img_token_123” -H “Content-Type: application/json” 
+-d ‘{“text”:“hello world”,“width”:800,“height”:400,“bg”:”#0B1020”,“fg”:”#E5E7EB”,“fontSize”:64}’ | jq .
+
+Transform (resize)
+
+DATA=$(base64 -w0 sample.png); 
+curl -s -X POST https://.replit.app/api/v1/images/transform 
+-H “Authorization: Bearer img_token_123” -H “Content-Type: application/json” 
+-d “{"imageBase64":"data:image/png;base64,${DATA}","ops":[{"type":"resize","w":400}],"output":"file"}” | jq .
+
+Meme
+
+curl -s -X POST https://.replit.app/api/v1/renders/meme 
+-H “Authorization: Bearer img_token_123” -H “Content-Type: application/json” 
+-d ‘{“topText”:“TOP LINE”,“bottomText”:“BOTTOM LINE”,“width”:800,“height”:800,“bg”:”#000000”,“fg”:”#FFFFFF”}’ | jq .

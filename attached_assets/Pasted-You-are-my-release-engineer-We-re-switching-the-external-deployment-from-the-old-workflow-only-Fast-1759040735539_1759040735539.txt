@@ -1,0 +1,72 @@
+You are my release engineer. We’re switching the external deployment from the old workflow-only FastAPI build to the new unified image pipeline with persona + gen + vault endpoints and a fake-mode provider.
+
+Goals:
+1) Ensure the running app exposes these routes (v1):
+   - POST /api/v1/persona.new
+   - POST /api/v1/gen
+   - POST /api/v1/gen.more    (may return 501 placeholder but must exist)
+   - GET  /api/v1/vault.open
+   - GET  /api/v1/health
+   - GET  /api/v1/status
+   - GET  /api/v1/ping
+   - (Legacy) POST /api/v1/build → should return {ok:true, text:"use /gen"} or 410 Gone
+
+2) Unify “image gen + upscale” via the internal adapter we added.
+   - IMG_PROVIDER must default to "fake" if IMG_API_KEY missing.
+   - UPSCALE_* envs optional; in fake mode still return valid file outputs.
+
+3) Entrypoint & build:
+   - Make sure the deployed entrypoint starts the server that actually serves the routes above.
+   - If the codebase is TypeScript/Express:
+       • Ensure tsconfig + build script: `npm run build` → dist/
+       • Start command uses Node on the built JS: `node dist/server.js` (or the correct file)
+     If it’s FastAPI:
+       • Start with uvicorn main:app --host 0.0.0.0 --port 8000
+   - Whichever server owns /api/v1/* routes must be the one published externally. Do NOT leave the old FastAPI shell unless it forwards to the new router.
+
+4) Wiring & redirects:
+   - If both old (FastAPI) and new (Express) exist, add a thin shim so old endpoints either:
+       • 301/307 redirect to the new /api/v1/* routes, or
+       • respond with JSON: {ok:false, message:"Use /api/v1/gen|persona.new|vault.open"}
+   - Keep /api/v1/build for back-compat but return a deprecation message.
+
+5) Health & mode:
+   - /api/v1/health should return:
+       { ok:true, mode:"fake"|"live", have:{IMG_API_KEY:boolean, HMAC_SECRET:boolean} }
+   - Fake mode must generate vault assets: src/vault/dev/{persona}/{job}/{style}/image_001.jpg… + manifest_job.json
+
+6) Local smoke tests (run programmatically and print the JSON results):
+   a) POST /api/v1/persona.new  {"name":"Aria","traits":["warm","editorial"]}  (Bearer builder_token_123)
+   b) POST /api/v1/gen          {"persona_id":"P0001","style":"studio","count":6,"slots":{"outfit":"red dress","mood":"playful","setting":"loft"}}
+   c) GET  /api/v1/vault.open   ?persona_id=P0001&job_id=J0001&style=studio
+   d) POST /api/v1/gen.more     {"persona_id":"P0001","job_id":"J0001","count":4}  (expect 501 placeholder is OK)
+   e) GET  /api/v1/health
+   f) GET  /api/v1/status and /api/v1/ping
+   g) POST /api/v1/build        {}  (expect deprecation JSON)
+
+   For each request, print:
+     - HTTP status
+     - Compact response JSON
+     - If /gen succeeded, list the vault directory and show image_001.jpg … image_006.jpg and manifest_job.json path.
+
+7) Env sanity:
+   - Ensure default .env (or Replit secrets) includes:
+       HMAC_SECRET (present)
+       IMG_PROVIDER=fake (if no IMG_API_KEY)
+       IMG_API_KEY (optional)
+       UPSCALE_PROVIDER=fake (default), UPSCALE_URL (optional), UPSCALE_SCALE=2, UPSCALE_FACE=true
+   - If any required var is missing for live mode, keep mode:"fake" and proceed.
+
+8) Publishing readiness:
+   - Confirm the Replit “Run/Start” command starts the server that serves the v1 routes.
+   - Output a short “Publish Checklist”:
+       • Entrypoint command
+       • PORT listening
+       • Routes found (list)
+       • Mode (fake|live)
+       • Vault base dir path
+       • Legacy compatibility behavior (/build)
+
+9) Finally, DO the fixes you list (create/move files, add redirects, update package.json or Procfile, etc.), run the server, execute the smoke tests, and print a final green report. If anything fails, apply minimal changes and rerun until all checks pass.
+
+Begin now. 

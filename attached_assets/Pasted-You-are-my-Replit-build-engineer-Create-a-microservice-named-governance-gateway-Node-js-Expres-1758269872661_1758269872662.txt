@@ -1,0 +1,451 @@
+You are my Replit build engineer. Create a microservice named "governance-gateway" (Node.js + Express) that enforces SAFE rate limits, per-persona/posting caps, duplicate-prevention, and exponential backoff across my internal services. It must NOT automate any third-party sites; it only evaluates requests and returns allow/deny guidance.
+
+GOALS (must follow)
+- Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid.
+- Structure: server.js, src/lib/{auth,validators,store,window.js}.js, src/routes/{health,limits,decide,admin}.js, README.md, package.json.
+- Auth: Bearer via AUTH_BEARER_TOKEN (default "gov_token_123") for all routes except /api/v1/health.
+- Storage: In-memory. Entities: personas, accounts, limits, strikes, dedupe, backoff, usage.
+- Decision API: POST /api/v1/decide → input { personaId, accountId?, action, dedupeKey?, cost?, meta? } returns { allow:boolean, waitForMs:number, reason, tokensRemaining?, nextAllowedAt?, backoffMs?, windowEndsAt?, strikeLevel? } and records usage if allow=true.
+- Limits: configurable per action (global default + per-persona override) in rolling window style (e.g., max=5/15m).
+- Dedupe: optional dedupeKey TTL to avoid duplicate actions within a window.
+- Backoff: on deny or explicit strike, grow exponential backoff per persona+action (cap at MAX_BACKOFF_MS).
+- Envelope every response: { ok: true|false, data?, error? }.
+- Print AVAILABLE_ROUTES and "READY" on boot.
+- README with example curl.
+
+FILES TO CREATE (exact contents below)
+
+/package.json
+{
+  "name": "governance-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "zod": "^3.23.8",
+    "nanoid": "^5.0.7"
+  }
+}
+
+/server.js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { bearerAuth } from './src/lib/auth.js';
+import healthRouter from './src/routes/health.js';
+import limitsRouter from './src/routes/limits.js';
+import decideRouter from './src/routes/decide.js';
+import adminRouter from './src/routes/admin.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+app.use(rateLimit({ windowMs: 5 * 60 * 1000, max: 400, standardHeaders: true }));
+
+// Public
+app.use('/api/v1/health', healthRouter);
+
+// Protected
+app.use('/api/v1/limits', bearerAuth, limitsRouter);
+app.use('/api/v1/decide', bearerAuth, decideRouter);
+app.use('/api/v1/admin', bearerAuth, adminRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+// Route printer
+function listRoutes() {
+  const lines = [];
+  app._router.stack.forEach((layer) => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase()).join(',');
+      lines.push(`${methods.padEnd(6)} ${layer.route.path}`);
+    } else if (layer.name === 'router' && layer.handle.stack) {
+      layer.handle.stack.forEach((h) => {
+        if (h.route) {
+          const methods = Object.keys(h.route.methods).map(m => m.toUpperCase()).join(',');
+          let base = layer.regexp?.toString() || '';
+          base = base.replace(/^\/\^\\/, '/').replace(/\\\/\?\$.*$/, '');
+          lines.push(`${methods.padEnd(6)} ${base}${h.route.path}`);
+        }
+      });
+    }
+  });
+  console.log('AVAILABLE_ROUTES');
+  lines.sort().forEach(l => console.log(l));
+}
+
+app.listen(PORT, () => {
+  console.log(`governance-gateway listening on :${PORT}`);
+  listRoutes();
+  console.log('READY');
+});
+
+export default app;
+
+/src/lib/auth.js
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'gov_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, role: 'service' };
+  next();
+}
+
+/src/lib/validators.js
+import { z } from 'zod';
+
+export const LimitSchema = z.object({
+  action: z.string().min(1),     // e.g., "post", "comment", "warm_tick"
+  max: z.number().int().positive(),
+  windowMs: z.number().int().positive(),
+  cost: z.number().int().positive().default(1),
+  dedupeTtlMs: z.number().int().nonnegative().default(0),
+  personaId: z.string().optional()  // if absent, applies globally as default
+});
+
+export const DecideSchema = z.object({
+  personaId: z.string().min(1),
+  accountId: z.string().optional(),
+  action: z.string().min(1),
+  cost: z.number().int().positive().default(1),
+  dedupeKey: z.string().optional(),
+  meta: z.record(z.any()).optional()
+});
+
+export const StrikeSchema = z.object({
+  personaId: z.string().min(1),
+  action: z.string().min(1),
+  reason: z.string().min(1),
+  weight: z.number().int().positive().default(1)
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+/src/lib/window.js
+// rolling-window helpers
+export function now() { return Date.now(); }
+export function cutoff(ms) { return now() - ms; }
+export function sweep(arr, winMs) {
+  const c = cutoff(winMs);
+  while (arr.length && arr[0] < c) arr.shift();
+  return arr;
+}
+
+/src/lib/store.js
+import { nanoid } from 'nanoid';
+import { now, sweep } from './window.js';
+
+// In-memory stores
+const globalLimits = new Map(); // action -> { max, windowMs, cost, dedupeTtlMs }
+const personaLimits = new Map(); // personaId -> Map(action -> limit)
+const usage = new Map(); // personaId -> Map(action -> timestamps[])
+const tokens = new Map(); // personaId -> Map(action -> remainingTokens:number) [optional if using fixed cost]
+const dedupe = new Map(); // dedupeKey -> expiresAt
+const backoff = new Map(); // key(personaId|action) -> { level, until }
+const strikes = []; // [{ id, personaId, action, reason, at, weight }]
+
+const MAX_BACKOFF_MS = 60 * 60 * 1000; // 1h cap
+const BASE_BACKOFF_MS = 60 * 1000;     // 1m base
+
+function keyPA(personaId, action) { return `${personaId}::${action}`; }
+
+export function setLimit(limit) {
+  const { action, max, windowMs, cost, dedupeTtlMs, personaId } = limit;
+  const clean = { action, max, windowMs, cost, dedupeTtlMs };
+  if (personaId) {
+    if (!personaLimits.has(personaId)) personaLimits.set(personaId, new Map());
+    personaLimits.get(personaId).set(action, clean);
+  } else {
+    globalLimits.set(action, clean);
+  }
+  return clean;
+}
+
+export function getEffectiveLimit(personaId, action) {
+  const per = personaLimits.get(personaId)?.get(action);
+  return per || globalLimits.get(action) || null;
+}
+
+export function recordStrike({ personaId, action, reason, weight }) {
+  const id = nanoid();
+  strikes.push({ id, personaId, action, reason, weight, at: new Date().toISOString() });
+
+  const k = keyPA(personaId, action);
+  const bo = backoff.get(k) || { level: 0, until: 0 };
+  const newLevel = Math.min(bo.level + weight, 20);
+  const ms = Math.min(BASE_BACKOFF_MS * (2 ** (newLevel - 1)), MAX_BACKOFF_MS);
+  const until = Math.max(Date.now() + ms, bo.until);
+  const rec = { level: newLevel, until };
+  backoff.set(k, rec);
+  return rec;
+}
+
+export function clearBackoff(personaId, action) {
+  backoff.delete(keyPA(personaId, action));
+}
+
+export function getBackoff(personaId, action) {
+  return backoff.get(keyPA(personaId, action)) || { level: 0, until: 0 };
+}
+
+export function inDedupeWindow(dedupeKey) {
+  if (!dedupeKey) return false;
+  const exp = dedupe.get(dedupeKey);
+  if (!exp) return false;
+  if (Date.now() > exp) { dedupe.delete(dedupeKey); return false; }
+  return true;
+}
+
+export function setDedupe(dedupeKey, ttlMs) {
+  if (!dedupeKey || !ttlMs) return;
+  dedupe.set(dedupeKey, Date.now() + ttlMs);
+}
+
+export function getUsage(personaId, action) {
+  if (!usage.has(personaId)) usage.set(personaId, new Map());
+  const m = usage.get(personaId);
+  if (!m.has(action)) m.set(action, []);
+  return m.get(action);
+}
+
+export function sweepUsage(personaId, action, windowMs) {
+  const arr = getUsage(personaId, action);
+  sweep(arr, windowMs);
+  return arr;
+}
+
+export function addUsage(personaId, action, count = 1) {
+  const arr = getUsage(personaId, action);
+  for (let i = 0; i < count; i++) arr.push(Date.now());
+  return arr.length;
+}
+
+export function stats() {
+  return {
+    globalLimits: Object.fromEntries(globalLimits.entries()),
+    personaLimits: Object.fromEntries([...personaLimits.entries()].map(([pid, m]) => [pid, Object.fromEntries(m.entries())])),
+    dedupeSize: dedupe.size,
+    backoffSize: backoff.size,
+    strikesCount: strikes.length
+  };
+}
+
+/src/routes/health.js
+import { Router } from 'express';
+import { stats } from '../lib/store.js';
+const r = Router();
+r.get('/', (req, res) => {
+  res.json({ ok: true, data: { service: 'governance-gateway', status: 'healthy', time: new Date().toISOString(), stats: stats() } });
+});
+export default r;
+
+/src/routes/limits.js
+import { Router } from 'express';
+import { parse, LimitSchema } from '../lib/validators.js';
+import { setLimit, getEffectiveLimit, stats } from '../lib/store.js';
+
+const r = Router();
+
+// PUT /limits  — upsert a limit (global or persona-specific)
+r.put('/', (req, res) => {
+  const v = parse(LimitSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const saved = setLimit(v.data);
+  res.json({ ok: true, data: saved });
+});
+
+// GET /limits/effective?personaId=&action=
+r.get('/effective', (req, res) => {
+  const { personaId = '', action = '' } = req.query;
+  const eff = getEffectiveLimit(personaId, action);
+  if (!eff) return res.status(404).json({ ok: false, error: { message: 'no_limit' } });
+  res.json({ ok: true, data: eff });
+});
+
+// GET /limits/stats
+r.get('/stats', (req, res) => {
+  res.json({ ok: true, data: stats() });
+});
+
+export default r;
+
+/src/routes/decide.js
+import { Router } from 'express';
+import { parse, DecideSchema } from '../lib/validators.js';
+import { getEffectiveLimit, sweepUsage, addUsage, inDedupeWindow, setDedupe, getBackoff, clearBackoff } from '../lib/store.js';
+
+const r = Router();
+
+// POST /decide  — evaluate and optionally consume tokens
+r.post('/', (req, res) => {
+  const v = parse(DecideSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const { personaId, action, cost, dedupeKey } = v.data;
+
+  const eff = getEffectiveLimit(personaId, action);
+  if (!eff) {
+    return res.json({ ok: true, data: { allow: false, waitForMs: 60_000, reason: 'no_limit_defined' } });
+  }
+
+  // Check backoff
+  const bo = getBackoff(personaId, action);
+  if (Date.now() < bo.until) {
+    return res.json({
+      ok: true,
+      data: {
+        allow: false,
+        waitForMs: Math.max(bo.until - Date.now(), 1),
+        reason: 'backoff_active',
+        backoffMs: Math.max(bo.until - Date.now(), 1)
+      }
+    });
+  } else if (bo.level > 0) {
+    // backoff elapsed, clear it
+    clearBackoff(personaId, action);
+  }
+
+  // Dedupe window
+  if (dedupeKey && inDedupeWindow(dedupeKey)) {
+    return res.json({ ok: true, data: { allow: false, waitForMs: 10_000, reason: 'duplicate_suppressed' } });
+  }
+
+  // Rolling window consumption
+  const arr = sweepUsage(personaId, action, eff.windowMs);
+  const used = arr.length;
+  const remaining = Math.max(eff.max - used, 0);
+
+  if (remaining <= 0 || cost > remaining) {
+    const windowEndsAt = new Date(arr[0] + eff.windowMs).toISOString();
+    const wait = Math.max((arr[0] + eff.windowMs) - Date.now(), 1);
+    return res.json({
+      ok: true,
+      data: {
+        allow: false,
+        waitForMs: wait,
+        reason: 'rate_limited',
+        tokensRemaining: remaining,
+        windowEndsAt
+      }
+    });
+  }
+
+  // Allow + consume
+  addUsage(personaId, action, cost);
+  if (dedupeKey && eff.dedupeTtlMs > 0) setDedupe(dedupeKey, eff.dedupeTtlMs);
+
+  const windowEndsAt = arr.length
+    ? new Date(arr[0] + eff.windowMs).toISOString()
+    : new Date(Date.now() + eff.windowMs).toISOString();
+
+  return res.json({
+    ok: true,
+    data: {
+      allow: true,
+      waitForMs: 0,
+      reason: 'ok',
+      tokensRemaining: Math.max(eff.max - (used + cost), 0),
+      nextAllowedAt: new Date().toISOString(),
+      windowEndsAt
+    }
+  });
+});
+
+export default r;
+
+/src/routes/admin.js
+import { Router } from 'express';
+import { parse, StrikeSchema } from '../lib/validators.js';
+import { recordStrike, stats, clearBackoff } from '../lib/store.js';
+
+const r = Router();
+
+// POST /admin/strike  — apply a strike (escalates backoff)
+r.post('/strike', (req, res) => {
+  const v = parse(StrikeSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const bo = recordStrike(v.data);
+  res.json({ ok: true, data: { backoff: bo } });
+});
+
+// POST /admin/clear-backoff { personaId, action }
+r.post('/clear-backoff', (req, res) => {
+  const { personaId, action } = req.body || {};
+  if (!personaId || !action) return res.status(400).json({ ok: false, error: { message: 'personaId_and_action_required' } });
+  clearBackoff(personaId, action);
+  res.json({ ok: true, data: { cleared: true } });
+});
+
+// GET /admin/stats
+r.get('/stats', (req, res) => {
+  res.json({ ok: true, data: stats() });
+});
+
+export default r;
+
+/README.md
+# governance-gateway
+
+Central decision engine for SAFE throttling: rate limits, dedupe, and exponential backoff. It never calls third-party sites. Other internal services call `/decide` before acting.
+
+## Env
+- AUTH_BEARER_TOKEN (default: `gov_token_123`)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Endpoints
+- GET  /api/v1/health                      (public)
+- PUT  /api/v1/limits                       (auth) — upsert a limit { action, max, windowMs, cost?, dedupeTtlMs?, personaId? }
+- GET  /api/v1/limits/effective?personaId=&action= (auth)
+- POST /api/v1/decide                       (auth) — { personaId, action, cost?, dedupeKey? } → allow/deny + timings
+- POST /api/v1/admin/strike                 (auth) — escalate backoff
+- POST /api/v1/admin/clear-backoff          (auth)
+- GET  /api/v1/admin/stats                  (auth)
+
+## Example (replace HOST)
+# Health
+curl -s https://HOST/api/v1/health
+
+# Set global limit: 5 posts / 15 minutes, dedupe 10 minutes
+curl -s -X PUT https://HOST/api/v1/limits \
+ -H "Authorization: Bearer gov_token_123" -H "Content-Type: application/json" \
+ -d '{"action":"post","max":5,"windowMs":900000,"dedupeTtlMs":600000}'
+
+# Persona override: allow 10 comments / hour
+curl -s -X PUT https://HOST/api/v1/limits \
+ -H "Authorization: Bearer gov_token_123" -H "Content-Type: application/json" \
+ -d '{"personaId":"pA","action":"comment","max":10,"windowMs":3600000}'
+
+# Ask to post (first time should allow)
+curl -s -X POST https://HOST/api/v1/decide \
+ -H "Authorization: Bearer gov_token_123" -H "Content-Type: application/json" \
+ -d '{"personaId":"pA","action":"post","dedupeKey":"post:r/pics::hash123"}'
+
+# Send a strike (e.g., external failure)
+curl -s -X POST https://HOST/api/v1/admin/strike \
+ -H "Authorization: Bearer gov_token_123" -H "Content-Type: application/json" \
+ -d '{"personaId":"pA","action":"post","reason":"rate_limit_fail","weight":1}'
+
+# Clear backoff once safe
+curl -s -X POST https://HOST/api/v1/admin/clear-backoff \
+ -H "Authorization: Bearer gov_token_123" -H "Content-Type: application/json" \
+ -d '{"personaId":"pA","action":"post"}'

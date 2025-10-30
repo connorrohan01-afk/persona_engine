@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${N8N_HOST}/api/v1/workflows",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-API-KEY", "value": "=${N8N_API_TOKEN}" }
+          ]
+        }
+      },
+      "id": "status-get",
+      "name": "n8n API: Workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}

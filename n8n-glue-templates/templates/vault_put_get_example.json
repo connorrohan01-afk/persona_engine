@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${VAULTS_URL}/api/v1/blobs",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"img-1\", \"blob\":\"base64:...\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${VAULTS_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "vault-put",
+      "name": "Vault: Put",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 160 ]
+    },
+    {
+      "parameters": {
+        "url": "=${VAULTS_URL}/api/v1/blobs/{{ $json.data.id }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${VAULTS_TOKEN}" } ] }
+      },
+      "id": "vault-get",
+      "name": "Vault: Get",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 420, 160 ]
+    }
+  ],
+  "connections": { "Vault: Put": { "main": [ [ { "node":"Vault: Get", "type":"main", "index": 0 } ] ] } }
+}

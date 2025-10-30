@@ -1,0 +1,401 @@
+You are my Replit build engineer. Create a microservice named persona-router (Node.js + Express) that receives simple “commands” (e.g., build persona, schedule post, fetch vault blob, link account) and forwards them to my internal services (persona-core, content-scheduler, vaults, account-intake) using a small in-memory registry. It MUST NOT automate any third-party sites. It’s a pure router/adapter with auth, validation, and retry.
+
+REQUIREMENTS (must follow)
+• Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, axios.
+• Structure: server.js, src/lib/{auth,validators,registry,forward,util}.js, src/routes/{router,registry,health}.js, README.md, package.json.
+• Auth: Bearer header via AUTH_BEARER_TOKEN (default router_token_123) required for write/route endpoints.
+• Registry: in-memory map of serviceId → { baseUrl, token?, headers? }. CRUD endpoints to upsert/list/get/delete.
+• Routing: POST /api/v1/router takes { tool, action, payload, options? } and dispatches to the right internal service via axios. Include simple retries with backoff.
+• Observability: each request/response logged (method, url, ms, status). On boot, print AVAILABLE_ROUTES and “READY: persona-router”.
+• Safety: no code to control browsers, proxies, captcha solvers, or external platform automation. Only forwards to internal microservices we built.
+• Envelope: all JSON responses use { ok: true|false, data?, error? }.
+• Rate limit: 300 req / 5 min (standard headers true).
+
+FILES TO CREATE (exact contents below)
+
+package.json
+json
+{
+  "name": "persona-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  }
+}
+
+server.js
+js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { requireBearer } from './src/lib/auth.js';
+import routerApi from './src/routes/router.js';
+import registryApi from './src/routes/registry.js';
+import healthApi from './src/routes/health.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 300, standardHeaders: true });
+app.use(limiter);
+
+// Public health
+app.use('/api/v1/health', healthApi);
+
+// Registry (auth)
+app.use('/api/v1/registry', requireBearer, registryApi);
+
+// Router (auth)
+app.use('/api/v1/router', requireBearer, routerApi);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+function printRoutes() {
+  const routes = [];
+  const scan = (stack, base = '') => {
+    stack.forEach((layer) => {
+      if (layer.route) {
+        const m = Object.keys(layer.route.methods).map(x => x.toUpperCase()).join(',');
+        routes.push(`${m.padEnd(6)} ${base}${layer.route.path}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        const prefixMatch = layer.regexp?.toString().match(/\\/(api[^\\]+)\\//);
+        const prefix = prefixMatch ? `/${prefixMatch[1]}` : '';
+        scan(layer.handle.stack, prefix);
+      }
+    });
+  };
+  scan(app._router.stack);
+  console.log('AVAILABLE_ROUTES');
+  routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+  console.log(`persona-router listening on :${PORT}`);
+  printRoutes();
+  console.log('READY: persona-router');
+});
+
+export default app;
+
+src/lib/auth.js
+js
+export function requireBearer(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'router_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, role: 'router' };
+  next();
+}
+
+src/lib/validators.js
+js
+import { z } from 'zod';
+
+export const RegistryUpsertSchema = z.object({
+  serviceId: z.string().min(1),
+  baseUrl: z.string().url(),
+  token: z.string().optional(),
+  headers: z.record(z.string()).optional(),
+  meta: z.record(z.any()).optional()
+});
+
+export const RouteRequestSchema = z.object({
+  tool: z.enum(['persona','scheduler','vault','intake','notify','raw']).default('raw'),
+  action: z.string().min(1),
+  payload: z.record(z.any()).default({}),
+  options: z.object({
+    serviceId: z.string().optional(), // override default mapping
+    retry: z.object({
+      attempts: z.number().int().min(0).max(5).default(2),
+      baseMs: z.number().int().min(50).max(2000).default(200),
+      timeoutMs: z.number().int().min(500).max(15000).default(5000)
+    }).default({})
+  }).default({})
+});
+
+export const IdParamSchema = z.object({ id: z.string().min(1) });
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+src/lib/registry.js
+js
+const REG = new Map();
+// sensible defaults you can replace at runtime via /registry
+// example keys only; leave empty by default
+export function upsertService({ serviceId, baseUrl, token, headers, meta }) {
+  const now = new Date().toISOString();
+  const rec = {
+    serviceId,
+    baseUrl,
+    token: token || null,
+    headers: headers || {},
+    meta: meta || {},
+    updatedAt: now,
+    createdAt: REG.get(serviceId)?.createdAt || now
+  };
+  REG.set(serviceId, rec);
+  return rec;
+}
+export function getService(serviceId) { return REG.get(serviceId) || null; }
+export function listServices() { return Array.from(REG.values()); }
+export function deleteService(serviceId) { return REG.delete(serviceId); }
+
+// default mapping for tool → serviceId
+export function resolveServiceId(tool, overrideId) {
+  if (overrideId) return overrideId;
+  const map = {
+    persona: 'persona-core',
+    scheduler: 'content-scheduler',
+    vault: 'vaults',
+    intake: 'account-intake',
+    notify: 'metrics-health',
+    raw: 'persona-core'
+  };
+  return map[tool] || 'persona-core';
+}
+
+src/lib/util.js
+js
+export const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+export function buildHeaders(regEntry) {
+  const h = { ...(regEntry?.headers || {}), 'Content-Type': 'application/json' };
+  if (regEntry?.token) h['Authorization'] = `Bearer ${regEntry.token}`;
+  return h;
+}
+
+export function ok(data) { return { ok: true, data }; }
+export function fail(message, extra = {}) { return { ok: false, error: { message, ...extra } }; }
+
+src/lib/forward.js
+js
+import axios from 'axios';
+import { sleep, buildHeaders } from './util.js';
+
+export async function forwardJson({ baseUrl, path, method = 'POST', body = {}, headers = {}, timeoutMs = 5000, attempts = 2, baseMs = 200 }) {
+  let lastErr = null;
+  for (let i = 0; i <= attempts; i++) {
+    try {
+      const t0 = Date.now();
+      const res = await axios.request({
+        url: `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`,
+        method,
+        data: body,
+        headers,
+        timeout: timeoutMs,
+        validateStatus: () => true
+      });
+      const ms = Date.now() - t0;
+      return { ok: true, status: res.status, ms, data: res.data };
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts) await sleep(baseMs * Math.pow(2, i));
+    }
+  }
+  return { ok: false, status: 0, ms: null, error: lastErr?.message || 'request_failed' };
+}
+
+export function routePlan(tool, action) {
+  // central place to define target paths per (tool, action)
+  const table = {
+    persona: {
+      build: { path: '/api/v1/persona/build', method: 'POST' },
+      update: { path: '/api/v1/persona/update', method: 'PATCH' }
+    },
+    scheduler: {
+      schedule: { path: '/api/v1/jobs/schedule', method: 'POST' },
+      cancel: { path: '/api/v1/jobs/cancel', method: 'POST' }
+    },
+    vault: {
+      put: { path: '/api/v1/blobs', method: 'POST' },
+      get: { path: '/api/v1/blobs/get', method: 'POST' }
+    },
+    intake: {
+      create: { path: '/api/v1/accounts', method: 'POST' },
+      update: { path: '/api/v1/accounts/update', method: 'POST' }
+    },
+    notify: {
+      heartbeat: { path: '/api/v1/signals/heartbeat', method: 'POST' },
+      register: { path: '/api/v1/signals/register', method: 'POST' }
+    },
+    raw: {}
+  };
+  return table[tool]?.[action] || null;
+}
+
+src/routes/health.js
+js
+import { Router } from 'express';
+const r = Router();
+r.get('/', (_req, res) => {
+  res.json({ ok: true, data: { service: 'persona-router', status: 'healthy' } });
+});
+export default r;
+
+src/routes/registry.js
+js
+import { Router } from 'express';
+import { parse, RegistryUpsertSchema, IdParamSchema } from '../lib/validators.js';
+import { upsertService, listServices, getService, deleteService } from '../lib/registry.js';
+
+const r = Router();
+
+r.get('/', (_req, res) => res.json({ ok: true, data: listServices() }));
+
+r.post('/', (req, res) => {
+  const v = parse(RegistryUpsertSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const rec = upsertService(v.data);
+  res.json({ ok: true, data: rec });
+});
+
+r.get('/:id', (req, res) => {
+  const v = parse(IdParamSchema, req.params);
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const rec = getService(v.data.id);
+  if (!rec) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: rec });
+});
+
+r.delete('/:id', (req, res) => {
+  const v = parse(IdParamSchema, req.params);
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const ok = deleteService(v.data.id);
+  if (!ok) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: { id: v.data.id, deleted: true } });
+});
+
+export default r;
+
+src/routes/router.js
+js
+import { Router } from 'express';
+import { parse, RouteRequestSchema } from '../lib/validators.js';
+import { resolveServiceId, getService } from '../lib/registry.js';
+import { forwardJson } from '../lib/forward.js';
+import { buildHeaders } from '../lib/util.js';
+
+const r = Router();
+
+r.post('/', async (req, res) => {
+  const v = parse(RouteRequestSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  const { tool, action, payload, options } = v.data;
+  const serviceId = resolveServiceId(tool, options?.serviceId);
+  const reg = getService(serviceId);
+  if (!reg) return res.status(400).json({ ok: false, error: { message: 'service_not_registered', serviceId } });
+
+  // Resolve target path
+  let path = `router/${tool}/${action}`;
+  let method = 'POST';
+  const plan = (await import('../lib/forward.js')).routePlan(tool, action);
+  if (plan) { path = plan.path; method = plan.method; }
+
+  const headers = buildHeaders(reg);
+  const result = await forwardJson({
+    baseUrl: reg.baseUrl,
+    path,
+    method,
+    body: payload || {},
+    headers,
+    timeoutMs: options.retry.timeoutMs,
+    attempts: options.retry.attempts,
+    baseMs: options.retry.baseMs
+  });
+
+  if (result.ok) {
+    return res.status(result.status || 200).json({
+      ok: true,
+      data: { serviceId, path, ms: result.ms, status: result.status, response: result.data }
+    });
+  } else {
+    return res.status(502).json({
+      ok: false,
+      error: { message: 'upstream_failed', serviceId, path, detail: result.error || 'error' }
+    });
+  }
+});
+
+export default r;
+
+README.md
+md
+# persona-router
+
+Tiny adapter that forwards “tool/action/payload” calls to your internal services. No external automation.
+
+## Env
+- AUTH_BEARER_TOKEN (default `router_token_123`)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Health (no auth)
+curl -s https://<your-repl>.replit.app/api/v1/health | jq .
+
+## Register services (auth)
+curl -s -X POST https://<your-repl>.replit.app/api/v1/registry \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"persona-core","baseUrl":"https://persona-core-<user>.replit.app","token":"core_token"}'
+
+curl -s -X POST https://<your-repl>.replit.app/api/v1/registry \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"content-scheduler","baseUrl":"https://content-scheduler-<user>.replit.app","token":"sched_token"}'
+
+curl -s -X POST https://<your-repl>.replit.app/api/v1/registry \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"vaults","baseUrl":"https://vaults-<user>.replit.app","token":"vaults_token"}'
+
+curl -s -X POST https://<your-repl>.replit.app/api/v1/registry \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"account-intake","baseUrl":"https://account-intake-<user>.replit.app","token":"intake_token"}'
+
+## Route calls (auth)
+### Build a persona
+curl -s -X POST https://<your-repl>.replit.app/api/v1/router \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"tool":"persona","action":"build","payload":{"name":"mybot","bio":"helpful","topics":["news","pics"]}}'
+
+### Schedule content
+curl -s -X POST https://<your-repl>.replit.app/api/v1/router \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"tool":"scheduler","action":"schedule","payload":{"accountId":"acc_123","cron":"*/30 * * * *","plan":[{"type":"text","text":"hi"}]}}'
+
+### Put/get vault blob
+curl -s -X POST https://<your-repl>.replit.app/api/v1/router \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"tool":"vault","action":"put","payload":{"label":"cookie_xyz","blob":"cookie=abc;token=xyz"}}'
+
+curl -s -X POST https://<your-repl>.replit.app/api/v1/router \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"tool":"vault","action":"get","payload":{"label":"cookie_xyz"}}'
+
+### Intake link/update
+curl -s -X POST https://<your-repl>.replit.app/api/v1/router \
+  -H "Authorization: Bearer router_token_123" -H "Content-Type: application/json" \
+  -d '{"tool":"intake","action":"create","payload":{"platform":"reddit","username":"u_demo","notes":"manual","session":{"cookies":"c=1"},"meta":{"owner":"me"}}}'

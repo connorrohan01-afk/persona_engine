@@ -1,0 +1,44 @@
+Extend PersonaEngine with Reddit Scraper + Poster. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. All endpoints must return stable JSON with ok, mode (“live” or “dry”), and deterministic fields. Support dry mode when keys are missing or dry=1. Integrate with existing Account Sessions + Proxy + Captcha and Images + Vaults branches.
+
+Add/Modify files:
+	•	app/routes/reddit.py — endpoints for scraping, posting, queue, moderation filters
+	•	app/providers/reddit.py — provider wrapper (PRAW-like or REST OAuth); fallback mock
+	•	app/models_reddit.py — SQLModel classes: RedditAccount, RedditPost, RedditQueueItem, RedditScrapeJob, RedditRateWindow
+	•	app/reddit_utils.py — helpers for flair lookup, subreddit rules cache, backoff, mime checks
+	•	app/config.py — add Reddit env vars
+	•	README_ROUTES.md — include examples
+
+Environment variables:
+REDDIT_CLIENT_ID
+REDDIT_CLIENT_SECRET
+REDDIT_REDIRECT_URI
+REDDIT_USERNAME
+REDDIT_PASSWORD
+REDDIT_USER_AGENT (default PersonaEngine/1.0 by )
+REDDIT_TIMEOUT_S=30
+REDDIT_MAX_RETRIES=3
+REDDIT_RATE_BURST=30
+REDDIT_RATE_WINDOW_S=60
+DEFAULT_TENANT=owner
+If env keys are missing, use mock provider and return mode:“dry”.
+
+API endpoints:
+	1.	POST /api/v1/reddit/post (text post)
+Request: { “tenant_id”:“owner”, “account_id”:“acc_123”, “subreddit”:“test”, “kind”:“text”, “title”:“hello world”, “body”:“just saying hi”, “nsfw”:false, “spoiler”:false, “flair_id”:null, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “post_id”:“rpo_xxx”, “reddit_fullname”:“t3_abc”, “permalink”:“https://reddit.com/r/test/comments/abc”, “status”:“posted” }
+	2.	POST /api/v1/reddit/post (link post)
+Request: { “tenant_id”:“owner”, “account_id”:“acc_123”, “subreddit”:“pics”, “kind”:“link”, “title”:“cool read”, “url”:“https://example.com/thing”, “nsfw”:false, “spoiler”:false, “flair_id”:null, “dry”:true }
+Response: { “ok”:true, “mode”:“dry”, “post_id”:“mock123”, “status”:“skipped” }
+	3.	POST /api/v1/reddit/post (image post)
+Request: { “tenant_id”:“owner”, “account_id”:“acc_123”, “subreddit”:“pics”, “kind”:“image”, “title”:“morning desk vibes”, “image_url”:“https://YOUR_APP/cdn/owner/2025/09/abcd.png?exp=…&sig=…”, “nsfw”:false, “spoiler”:false, “flair_id”:null, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “post_id”:“rpo_img99”, “permalink”:“https://reddit.com/r/pics/comments/img99”, “status”:“posted” }
+	4.	POST /api/v1/reddit/queue
+Request: { “tenant_id”:“owner”, “account_id”:“acc_123”, “subreddit”:“test”, “kind”:“text”, “title”:“queued post”, “body”:“this will send later”, “schedule”:“2025-09-21T12:00:00Z” }
+Response: { “ok”:true, “mode”:“live”, “queue_id”:“rq_789”, “status”:“queued” }
+	5.	GET /api/v1/reddit/scrape
+Request params: subreddit=test, limit=5
+Response: { “ok”:true, “mode”:“live”, “items”:[ { “id”:“t3_1”, “title”:“sample”, “url”:“https://reddit.com/r/test/1” } ] }
+	6.	GET /api/v1/reddit/accounts
+Response: { “ok”:true, “accounts”:[ { “id”:“acc_123”, “username”:“bot1”, “tenant_id”:“owner” } ] }
+
+Dry mode example: return { “ok”:true, “mode”:“dry”, “status”:“skipped” }.

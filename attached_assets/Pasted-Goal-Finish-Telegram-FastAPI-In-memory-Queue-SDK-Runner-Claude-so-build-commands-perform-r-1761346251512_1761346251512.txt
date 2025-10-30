@@ -1,0 +1,103 @@
+Goal: Finish Telegram → FastAPI → In-memory Queue → SDK Runner (Claude) so /build commands perform real file reads/writes, show diffs/hashes, and support approvals for protected files. Keep everything in one FastAPI process on port 5000.
+
+Do this exactly:
+	1.	Dependencies: ensure anthropic, fastapi, uvicorn, python-telegram-bot==13.* (or keep our raw HTTP calls), and httpx are installed.
+	•	If using requirements.txt, add them; if using Poetry, add them to pyproject.toml.
+	2.	Project layout (create/update files):
+
+app/server.py                 # FastAPI + routes + worker + telegram handlers
+sdk/runner.py                 # Claude helpers (plan/patch)
+utils/files.py                # read/write helpers
+utils/tests.py                # tiny smoke tests
+tools/reset_webhook.py        # set/delete/verify Telegram webhook for our public repl URL
+
+3.	server.py: Single process app with:
+	•	global thread-safe queue TASK_QUEUE = queue.Queue()
+	•	background worker thread started on startup; it .get()s jobs and calls sdk.runner functions
+	•	routes:
+	•	GET /api/v1/health → {ok:true, queue_depth:n, time:...}
+	•	GET /api/v1/telegram/info → live webhook status (call Telegram getWebhookInfo)
+	•	POST /api/v1/telegram/{token} → webhook; parse message text; dispatch commands
+	•	Commands (from Telegram text):
+	•	/ping → reply “✅ Direct test pong”
+	•	/status → reply with worker status + queue depth
+	•	/build read <path> → reply with first 1200 chars + SHA1
+	•	/build read_hash <path> → reply with SHA1 only
+	•	/build diff <path> → reply with git diff -- <path> (first ~120 lines)
+	•	/build patch <path> → expect the next user message to contain a spec:
+
+goal: ...
+tests:
+- ...
+- ...
+
+Enqueue a job {type:"patch", path, goal, tests}. Return “🛠 Queued build: ”.
+
+	•	Optional approvals: keep a list PROTECTED = ["app/server.py","sdk/runner.py"].
+If patch targets a protected file, reply “🛑 Needs approval: /approve <job_id>”.
+/approve <job_id> enqueues it; /reject <job_id> drops it.
+
+	•	Logging: print inbound Telegram text, job IDs, writes, and test results.
+
+	4.	utils/files.py:
+	•	read_text(path) / write_text(path, text) (UTF-8)
+	•	sha1(path) returns hex or "MISSING"
+	•	git_diff(path, max_lines=120) returns git diff snippet (or “(no diff)”)
+	5.	utils/tests.py:
+	•	run_smoke_tests():
+	•	try to import test_sample and call a trivial function if present; else return True,"PASS(no tests)"
+	6.	sdk/runner.py (use ANTHROPIC_API_KEY):
+	•	plan(prompt:str)->str using claude-3-5-sonnet-20241022
+	•	patch_file(path:str, goal:str, tests:list[str]):
+	•	read original file
+	•	prompt Claude: “You are a code editor. Return ONLY the full new file content. File: {path}. Goal: {goal}. Original:\n’’’{original}’’’”
+	•	write new text
+	•	run run_smoke_tests()
+	•	return dict {ok, lines_changed, note}
+	•	Keep it deterministic; no tool calls.
+	7.	tools/reset_webhook.py:
+	•	Detect the public Replit URL (env REPLIT_PUBLIC_URL if available; else instruct to paste)
+	•	Delete old webhook, set new webhook to
+https://<PUBLIC_URL>/api/v1/telegram/${TELEGRAM_BOT_TOKEN}
+	•	Print the result of getWebhookInfo
+	8.	Secrets: use environment vars already present:
+	•	TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT, ANTHROPIC_API_KEY
+	9.	Startup:
+	•	Uvicorn at 0.0.0.0:5000, lifespan start: start worker thread and print “Worker running”.
+	10.	Tests to run automatically after changes (and show in console):
+	•	Call GET /api/v1/health (expect ok:true)
+	•	tools/reset_webhook.py to ensure Telegram points to this deployment
+	•	Simulate inbound Telegram JSON to /api/v1/telegram/{token} for:
+	•	/ping (expect reply)
+	•	/build read test_sample.py (expect content + SHA1)
+	•	/build patch test_canary.txt with spec:
+
+goal: overwrite file with:
+CANARY: {{timestamp}} :: proving write OK
+
+•	/build read test_canary.txt (expect CANARY line)
+	•	/build patch test_sample.py (append blank line only) then /build diff test_sample.py (expect 1 line diff)
+
+	11.	Important: Do NOT echo secrets in logs or replies. If a command fails, reply with a concise error and print full traceback only in Replit console.
+	12.	Deliverables: Commit all files; show a short summary listing:
+	•	Active routes
+	•	Commands supported
+	•	Webhook URL in use
+	•	Sample transcript from console: inbound → queued → worker write → test result → telegram reply.
+
+After you finish, restart the app and confirm in console:
+
+✅ Worker thread started
+✅ Webhook set → https://<public>/api/v1/telegram/<token>
+
+I’ll then run from Telegram:
+
+/ping
+/build read app/server.py
+/build patch test_canary.txt
+goal: overwrite file with: CANARY OK
+/build read test_canary.txt
+/build patch test_sample.py
+goal: append blank line only
+/build diff test_sample.py
+All of these must succeed and show real file changes (hash/diff) and logs.

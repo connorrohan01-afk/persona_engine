@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "type": "deploy.test",
+  "endpoint": "http://localhost:5000/api/v1/health",
+  "method": "GET",
+  "status_code": 200,
+  "response": {
+    "ok": true,
+    "db": "ok",
+    "time": "2025-10-24T21:15:29.424710"
+  },
+  "headers": {
+    "date": "Fri, 24 Oct 2025 21:15:28 GMT",
+    "server": "uvicorn",
+    "content-length": "57",
+    "content-type": "application/json",
+    "x-request-id": "09d07222-fd2c-480c-8334-db873c9a4e33"
+  },
+  "task_id": "telegram_build_integration_test",
+  "duration_seconds": 0.095,
+  "completed_at": "2025-10-24T21:15:29.428153Z",
+  "original_task": {
+    "type": "deploy.test",
+    "endpoint": "http://localhost:5000/api/v1/health",
+    "method": "GET",
+    "id": "telegram_build_integration_test",
+    "enqueued_at": "2025-10-24T21:15:29.219550Z"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "scheduler-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bullmq": "^4.17.0",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "ioredis": "^5.4.1",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  }
+}

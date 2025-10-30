@@ -1,0 +1,142 @@
+Extend PersonaEngine with a production-ready Reddit posting pipeline. Keep FastAPI + SQLModel. Preserve existing auth (Authorization: Bearer <AUTH_BEARER_TOKEN>). Maintain dry-run when keys are missing or dry=1.
+
+Files to add/modify
+	•	app/routes/reddit.py — implement live handlers for:
+	•	POST /api/v1/reddit/post
+	•	POST /api/v1/reddit/comment
+	•	POST /api/v1/reddit/upvote
+	•	app/providers/reddit.py — add real posting & rules calls (httpx), robust error mapping.
+	•	app/utils/validate.py — content/rules validation helpers.
+	•	app/rate.py — add per-sub pacing, ban/ratelimit cool-downs.
+	•	app/queue.py — add post_job handler for background posting with retries/backoff.
+
+Request/Response Contracts (stable)
+
+POST /api/v1/reddit/post
+json
+
+{
+  "tenant_id": "owner",
+  "account_id": "acc_123",
+  "subreddit": "pics",
+  "kind": "link|self|image",
+  "title": "string",
+  "body": "optional string for self-posts",
+  "url": "optional for link posts",
+  "image_url": "optional for image posts",
+  "flair_text": "optional",
+  "nsfw": false,
+  "spoiler": false,
+  "schedule": "optional ISO datetime (enqueue if in future)",
+  "dry": false
+}
+
+Response (sync path if schedule absent):
+json
+
+{ "ok": true, "mode": "live|mock", "post_id": "t3_xxx", "status": "posted", "subreddit": "pics" }
+
+If scheduled:
+json
+
+{ "ok": true, "mode": "live|mock", "status": "queued", "job_id": "job_...", "run_after": "ISO" }
+
+POST /api/v1/reddit/comment
+json
+
+{ "tenant_id":"owner", "account_id":"acc_123", "thing_id":"t3_xxx", "text":"nice!" }
+
+→ { "ok": true, "mode":"live|mock", "comment_id":"t1_yyy", "status":"posted" }
+
+POST /api/v1/reddit/upvote
+json
+
+{ "tenant_id":"owner", "account_id":"acc_123", "thing_id":"t3_xxx" }
+→ { "ok": true, "mode":"live|mock", "status":"ok" }
+
+Pre-flight Rules & Validation
+
+In app/providers/reddit.py add:
+	•	get_sub_rules(subreddit) -> {title_max, allow_links, allow_images, banned_words:[...], flairs:[...], nsfw_ok:bool, post_interval_secs:int}
+	•	If live is unavailable, mock sensible defaults but always return structured fields.
+	•	get_flairs(subreddit) -> list[{id, text}] (mock if dry).
+
+In app/utils/validate.py:
+	•	validate_title(title, title_max) -> (ok, reason?)
+	•	validate_kind(kind, rules) -> (ok, reason?)
+	•	filter_banned(text, banned_words) -> (ok, offending?)
+	•	choose_flair(flair_text, flairs) -> flair_id|None
+
+Pre-flight flow (in /reddit/post)
+	1.	Load Account + Session; check rate.should_act(account_id, 'post'). If false → return 429 with {ok:false, retry_after: seconds}.
+	2.	Fetch rules = get_sub_rules(subreddit) (cache 10 min).
+	3.	Validate title length, kind permission, banned words; pick flair id if requested.
+	4.	If schedule in the future → enqueue a post_job with idempotency key: post:{account_id}:{subreddit}:{hash(title+url+image_url)} and return queued response.
+	5.	Else proceed to post now (live or mock).
+
+Live Posting (app/providers/reddit.py)
+
+Implement minimal Reddit API client using httpx with:
+	•	Proxy support via Session.proxy
+	•	Headers with realistic UA + language
+	•	Cookie/session handling from Session.cookies_json (stored after account creation/warmers)
+	•	Endpoints:
+	•	Submit post (/api/submit) for kind: link & self
+	•	Image upload: prefer “link image by URL” via submit for MVP; add upload stub that returns hosted URL (mock if dry)
+	•	Comment: /api/comment
+	•	Vote: /api/vote
+
+Error mapping (normalize to our shapes)
+	•	Rate limited → error_code='ratelimit', include retry_after seconds parsed from message.
+	•	Shadowban/suspicion (e.g., u/ actions fail silently) → error_code='shadowban'.
+	•	Sub restrictions (flair required, link not allowed) → error_code='rules', include rule.
+	•	Captcha required → error_code='captcha'.
+Return a unified error object: {ok:false, error_code, message, details}.
+
+Backoff & Retries (app/queue.py)
+
+Add a background post_job handler:
+	•	Args: {account_id, subreddit, kind, title, body, url, image_url, flair_id, nsfw, spoiler}
+	•	Steps:
+	1.	Check rate.should_act(account_id,'post'); if false → reschedule with run_after=now()+next_window('post').
+	2.	Pre-flight rules (cache ok). If invalid → mark job failed (no retry) with reason.
+	3.	Attempt post via provider.
+	•	On ratelimit → exponential backoff (base 10m → 20m → 40m → cap 6h).
+	•	On captcha → fail fast with instruction (warm flow should solve ahead of time).
+	•	On transient network → retry with backoff (2m, 5m, 10m, cap 30m).
+	•	On shadowban → mark account flag shadow_suspected=true, reduce posting rate via rate.
+	4.	On success: create Post row (status=posted, post_id_ext), write Metric(key='reddit.post', value_num=1).
+
+Idempotency: Use idempotency_key to prevent dupes (same account + same title+url/image within 24h).
+
+Route handlers
+	•	/reddit/post:
+	•	If schedule future → enqueue post_job and return queued.
+	•	Else call a helper perform_post_now() that wraps the same logic as the job (but inline).
+	•	/reddit/comment & /reddit/upvote: lightweight wrappers calling provider; respect rate limits (comment min interval 15–30m per account).
+
+Rate/Pacing updates (app/rate.py)
+	•	Add per-sub cooldown memory: don’t post twice to same sub within 24–48h per account (config).
+	•	Global daily caps per account: default posts<=2, comments<=5, votes<=30. Read from env with sane defaults.
+	•	Add cooldown('ratelimit', seconds) per account to delay future actions after a 429.
+
+Dry-run behavior
+	•	If no Reddit creds/cookies or dry=1, return mock success with synthetic post_id = "t3_"+uuid4() but still:
+	•	Insert Post row with mode='mock'.
+	•	Respect pacing & idempotency (so control plane is realistic).
+
+Telemetry & Logs
+	•	Log every attempt with: request_id, account_id, subreddit, kind, result, error_code, backoff_seconds.
+	•	On final failure, store in Job.last_error and attach provider response in Post.status='failed' notes.
+
+Tests (basic)
+	•	Dry: validate title too long → 400 with error_code='rules'.
+	•	Live mocked: simulate ratelimit → backoff increments and reschedules.
+	•	Idempotency: duplicate enqueue returns queued once, skipped next.
+
+README_ROUTES.md
+	•	Document request/response examples for /reddit/post, /reddit/comment, /reddit/upvote.
+	•	Document error codes and recommended client handling (n8n will map them).
+
+Deliverable
+	•	Working endpoints with consistent JSON, robust error handling, and background post_job with retries/backoff.

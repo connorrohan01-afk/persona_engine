@@ -1,0 +1,112 @@
+Extend PersonaEngine with a production-ready Warmer + Scheduler. Keep FastAPI + SQLModel. Preserve existing auth (Authorization: Bearer <AUTH_BEARER_TOKEN>). Maintain dry-run if keys are missing or dry=1.
+
+New/Updated Files
+	•	app/routes/scheduler.py → mount at /api/v1/schedule
+	•	app/routes/warm.py → mount at /api/v1/warm
+	•	app/queue.py → add persistence-backed job queue with priorities, retries, backoff, idempotency
+	•	app/rate.py → pacing helpers per persona/account, jitter, daily caps
+	•	app/providers/reddit.py → add lightweight live stubs for read actions (fetch sub rules, vote, save, visit)
+	•	app/utils/human.py → randomized delays, diurnal patterns, humanization helpers
+
+DB Additions (SQLModel)
+	•	Job (already defined) — extend fields if needed: priority:int=5, idempotency_key:str|None, run_after:datetime|None
+	•	WarmPlan (new): id, account_id, persona_id, stage:str (seed_profile|browse|join|comment|post_light), next_run_at, progress_json, created_at, updated_at
+	•	Add to Account: warm_status:str='pending', last_warm_at:datetime|None
+
+Queue / Worker
+
+Implement in app/queue.py:
+	•	enqueue(job_type:str, args:dict, *, idempotency_key:str|None=None, priority:int=5, run_after:datetime|None=None) -> str
+	•	reserve(n:int=10) -> list[Job] (due & not locked)
+	•	mark_done(job_id, ok:bool, error:str|None=None, retry_in_seconds:int|None=None)
+	•	Retry policy: exponential backoff with jitter (e.g., 2^attempts * base, cap at 6h)
+	•	worker_tick(max_jobs:int=10) — processes due jobs; call at startup and from /api/v1/system/tick (auth)
+	•	Idempotency: if idempotency_key exists and a completed job with same key is present, skip.
+
+Rate / Pacing (app/rate.py)
+	•	should_act(account_id, kind:str) -> bool using:
+	•	per-account min interval per kind (browse: 5–10m, vote: 2–5m, comment: 15–30m, post: 60–120m) with jitter
+	•	daily caps per kind (configurable via env; defaults safe)
+	•	diurnal schedule: allow more actions 9am–11pm local, sparse overnight
+	•	next_window(kind) helper returning randomized seconds until next allowed action.
+
+Humanization (app/utils/human.py)
+	•	sleep_jitter(base_ms:int, spread:float=0.3) -> int
+	•	human_wait(kind) -> int (ms) picking from typical ranges
+	•	pick_subreddits(tier:'safe'|'interest', n:int) placeholder stub
+
+Providers — reddit (read-only stubs)
+
+In app/providers/reddit.py add:
+	•	fetch_sub_rules(subreddit) -> dict (mock in dry)
+	•	browse_feed(session, subreddit) -> list[dict] (mock)
+	•	upvote(session, thing_id) -> bool (mock)
+	•	save(session, thing_id) -> bool (mock)
+	•	comment(session, thing_id, text) -> {ok, comment_id} (mock)
+These should accept session (cookies/proxy) and respect dry mode.
+
+Warmer Logic (app/routes/warm.py)
+
+Implement:
+	•	POST /api/v1/warm/plan
+Body: { "account_id": "...", "persona_id":"optional", "strategy":"default" }
+Creates or updates a WarmPlan with staged steps:
+	1.	seed_profile (set interests, follow a few safe subs)
+	2.	browse (open home/sub feeds, save a few posts)
+	3.	join (join 3–5 subs gradually)
+	4.	comment (light, positive comments)
+	5.	post_light (one safe self-post or image in a newbie-friendly sub)
+Returns {ok, mode, warm_plan_id, next_run_at, stage}
+	•	POST /api/v1/warm/start
+Body: { "account_id": "...", "persona_id":"optional" }
+Enqueue job_type="warm_step" with args {account_id}.
+Sets Account.warm_status='queued'.
+Returns {ok, mode, status:'queued'}
+	•	GET /api/v1/warm/status?account_id=...
+Returns {ok, mode, warm_status, stage, next_run_at, progress}
+
+Job handler: implement in app/routes/warm.py or app/queue.py:
+	•	handle_warm_step(args):
+	•	Load Account, Session, WarmPlan (create default if missing).
+	•	Check rate.should_act(account_id, stage_kind); if false → re-enqueue with run_after=now()+next_window(stage_kind).
+	•	For current stage:
+	•	seed_profile: pick 5–10 safe subs (mock), mark progress, schedule browse in 1–3h.
+	•	browse: fetch feeds for 2–3 subs, randomly save/upvote a few items.
+	•	join: (mock) mark joined 1–2 subs; plan next join in 1–2h until target met.
+	•	comment: leave 1 short comment/day for 2–3 days.
+	•	post_light: enqueue a separate post_job to a safe sub (or call /reddit/post internally in dry).
+	•	Update WarmPlan.stage and next_run_at.
+	•	Set Account.last_warm_at=now(), warm_status='running'|'waiting'|'complete'.
+	•	On completion, set 'complete' and stop scheduling.
+
+Scheduler Routes (app/routes/scheduler.py)
+	•	POST /api/v1/schedule/enqueue
+Body: { "job_type":"warm_step|post_job|custom", "args":{...}, "idempotency_key":"optional", "priority":5, "run_after":"optional ISO" }
+Returns {ok, job_id}
+	•	POST /api/v1/system/tick
+Triggers worker_tick() once; returns {ok, processed, remaining}
+	•	GET /api/v1/system/queue
+Returns {ok, counts:{due, locked, scheduled, failed, completed}}
+
+Dry-run Behavior
+	•	If DRY_RUN_DEFAULT or any provider key missing, treat actions as mock but still persist WarmPlan, enqueue jobs, and advance stages with timestamps — i.e., full control-plane realism.
+	•	Responses always include "mode": "mock"|"live".
+
+Contracts (stable JSON)
+	•	/warm/plan → {ok, mode, warm_plan_id, stage, next_run_at}
+	•	/warm/start → {ok, mode, status:'queued'}
+	•	/warm/status → {ok, mode, warm_status, stage, next_run_at, progress}
+	•	/schedule/enqueue → {ok, job_id}
+	•	/system/tick → {ok, processed, remaining}
+
+Logging & Metrics
+	•	Log each warm action with: request_id, account_id, stage, action, result, retry/backoff.
+	•	Write a Metric row on each successful warm action: key='warm.action', value_num=1, meta_json.
+
+Tests
+	•	Dry-run: create account → plan → start → tick worker repeatedly → confirm stages advance to complete.
+	•	Idempotency: same idempotency_key doesn’t create duplicates.
+	•	Rate-limit: if should_act false, job reschedules with sensible run_after.
+
+README_ROUTES.md
+	•	Document all new routes, request/response examples, and the warm stages.

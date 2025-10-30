@@ -1,0 +1,12 @@
+{
+  "id": "U0099",
+  "name": "Test System Persona",
+  "role": "system",
+  "traits": [
+    "test",
+    "logging",
+    "enhancement"
+  ],
+  "created_at": "2025-09-28T06:58:53.322Z",
+  "system": true
+}

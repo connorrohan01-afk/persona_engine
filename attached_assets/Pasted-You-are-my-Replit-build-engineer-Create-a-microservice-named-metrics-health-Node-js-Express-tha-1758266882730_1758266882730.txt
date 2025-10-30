@@ -1,0 +1,437 @@
+You are my Replit build engineer. Create a microservice named metrics-health (Node.js + Express) that centralizes health checks, heartbeats, lightweight pings, and a small status dashboard API for my internal services (the ones we’re building: persona-core, content-scheduler, vaults, intake, router). This service MUST NOT automate third-party sites. It only records/serves health metadata and (optionally) POSTs a simple JSON webhook on status changes.
+
+REQUIREMENTS (must follow)
+• Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, axios.
+• Structure: server.js, src/lib/{auth,validators,store,notify}.js, src/routes/{health,signals,metrics}.js, README.md, package.json.
+• Auth: Bearer header via AUTH_BEARER_TOKEN (default: metrics_token_123) required for write endpoints.
+• Storage: In-memory Maps for services and events; ready to swap later.
+• Endpoints live under /api/v1; JSON envelope { ok, data?, error? }.
+• Rate-limit: 400 req / 5 min default.
+• Reliability:
+  – Heartbeats with TTL: if no beat within ttlMs, flip status to "stale".
+  – Pings: on-demand url check (HEAD or GET) with timeout and record result.
+  – Status-change hooks: optional WEBHOOK_URL env — when a service status changes (up→down, down→up, up→stale, etc.) send a single POST with {serviceId, prev, next, at}.
+• On boot: print AVAILABLE_ROUTES and “READY: metrics-health”.
+• No UI, API only (dashboard consumers can poll /metrics/summary).
+
+FILES TO CREATE (exact contents below)
+
+package.json
+json
+{
+  "name": "metrics-health",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  }
+}
+
+server.js
+js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import healthRouter from './src/routes/health.js';
+import signalsRouter from './src/routes/signals.js';
+import metricsRouter from './src/routes/metrics.js';
+import { bearerAuthOptional } from './src/lib/auth.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 400, standardHeaders: true });
+app.use(limiter);
+
+// Public health
+app.use('/api/v1/health', healthRouter);
+
+// Signals + Metrics (write operations will enforce auth inside routers)
+app.use('/api/v1/signals', bearerAuthOptional, signalsRouter);
+app.use('/api/v1/metrics', bearerAuthOptional, metricsRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+function printRoutes() {
+  const routes = [];
+  const scan = (stack, base = '') => {
+    stack.forEach((layer) => {
+      if (layer.route) {
+        const m = Object.keys(layer.route.methods).map(x => x.toUpperCase()).join(',');
+        routes.push(`${m.padEnd(6)} ${base}${layer.route.path}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        const prefix = (layer.regexp?.toString().match(/\\/(api[^\\]+)\\//)?.[0] || '/').slice(0, -1);
+        scan(layer.handle.stack, prefix);
+      }
+    });
+  };
+  scan(app._router.stack);
+  console.log('AVAILABLE_ROUTES');
+  routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+  console.log(`metrics-health listening on :${PORT}`);
+  printRoutes();
+  console.log('READY: metrics-health');
+});
+
+export default app;
+
+src/lib/auth.js
+js
+export function requireBearer(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'metrics_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, service: 'metrics-health' };
+  next();
+}
+
+export function bearerAuthOptional(req, _res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'metrics_token_123';
+  if (token && token === allow) {
+    req.user = { ok: true, service: 'metrics-health' };
+  }
+  next();
+}
+
+src/lib/validators.js
+js
+import { z } from 'zod';
+
+export const ServiceUpsertSchema = z.object({
+  serviceId: z.string().min(1),
+  displayName: z.string().min(1).optional(),
+  group: z.string().optional(), // e.g., "core", "edge", "bots"
+  url: z.string().url().optional(), // optional health URL
+  ttlMs: z.number().int().positive().default(120000), // 2 min default
+  meta: z.record(z.any()).optional()
+});
+
+export const HeartbeatSchema = z.object({
+  serviceId: z.string().min(1),
+  at: z.string().datetime().optional() // ISO, default now
+});
+
+export const PingRequestSchema = z.object({
+  url: z.string().url(),
+  method: z.enum(['HEAD','GET']).default('HEAD'),
+  timeoutMs: z.number().int().positive().max(15000).default(5000)
+});
+
+export const PatchStatusSchema = z.object({
+  status: z.enum(['up','down','stale']).optional(),
+  meta: z.record(z.any()).optional()
+});
+
+export const QueryListSchema = z.object({
+  group: z.string().optional(),
+  status: z.enum(['up','down','stale']).optional()
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+src/lib/store.js
+js
+import { nanoid } from 'nanoid';
+
+const services = new Map(); // serviceId -> record
+const events = []; // recent status change events
+
+export function upsertService(data) {
+  const now = new Date().toISOString();
+  const prev = services.get(data.serviceId);
+  const rec = {
+    id: data.serviceId,
+    displayName: data.displayName || data.serviceId,
+    group: data.group || 'default',
+    url: data.url || null,
+    ttlMs: data.ttlMs ?? 120000,
+    status: prev?.status || 'stale', // unknown until first heartbeat or manual mark
+    lastBeatAt: prev?.lastBeatAt || null,
+    meta: { ...(prev?.meta || {}), ...(data.meta || {}) },
+    createdAt: prev?.createdAt || now,
+    updatedAt: now
+  };
+  services.set(data.serviceId, rec);
+  return rec;
+}
+
+export function recordHeartbeat(serviceId, atIso) {
+  const rec = services.get(serviceId);
+  const nowIso = atIso || new Date().toISOString();
+  if (!rec) return null;
+  const prevStatus = rec.status;
+  rec.lastBeatAt = nowIso;
+  rec.updatedAt = nowIso;
+  // status might flip to up here
+  const nextStatus = 'up';
+  if (prevStatus !== nextStatus) pushEvent(serviceId, prevStatus, nextStatus);
+  rec.status = nextStatus;
+  services.set(serviceId, rec);
+  return rec;
+}
+
+export function evaluateStaleness() {
+  const now = Date.now();
+  for (const rec of services.values()) {
+    if (!rec.lastBeatAt) continue;
+    const age = now - new Date(rec.lastBeatAt).getTime();
+    const prev = rec.status;
+    const next = age > rec.ttlMs ? 'stale' : 'up';
+    if (prev !== next) {
+      pushEvent(rec.id, prev, next);
+      rec.status = next;
+      rec.updatedAt = new Date().toISOString();
+      services.set(rec.id, rec);
+    }
+  }
+}
+
+export function manualStatus(serviceId, next) {
+  const rec = services.get(serviceId);
+  if (!rec) return null;
+  const prev = rec.status;
+  if (prev !== next) pushEvent(serviceId, prev, next);
+  rec.status = next;
+  rec.updatedAt = new Date().toISOString();
+  services.set(serviceId, rec);
+  return rec;
+}
+
+export function listServices(filter = {}) {
+  evaluateStaleness();
+  let arr = Array.from(services.values());
+  if (filter.group) arr = arr.filter(s => s.group === filter.group);
+  if (filter.status) arr = arr.filter(s => s.status === filter.status);
+  return arr;
+}
+
+export function getService(id) {
+  evaluateStaleness();
+  return services.get(id) || null;
+}
+
+export function deleteService(id) {
+  return services.delete(id);
+}
+
+export function pushEvent(serviceId, prev, next) {
+  events.unshift({ id: nanoid(), serviceId, prev, next, at: new Date().toISOString() });
+  if (events.length > 500) events.pop();
+  return events[0];
+}
+
+export function listEvents(limit = 50) {
+  return events.slice(0, limit);
+}
+
+src/lib/notify.js
+js
+import axios from 'axios';
+
+export async function notifyStatusChange({ serviceId, prev, next, at, snapshot }) {
+  const hook = process.env.WEBHOOK_URL; // optional
+  if (!hook) return { sent: false, reason: 'no_webhook' };
+  try {
+    const res = await axios.post(hook, { serviceId, prev, next, at, snapshot }, {
+      timeout: 5000,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return { sent: true, code: res.status };
+  } catch (e) {
+    return { sent: false, error: e.message?.slice(0, 180) || 'error' };
+  }
+}
+
+src/routes/health.js
+js
+import { Router } from 'express';
+import { listServices, listEvents } from '../lib/store.js';
+
+const r = Router();
+r.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    data: {
+      service: 'metrics-health',
+      status: 'healthy',
+      counts: { services: listServices().length, events: listEvents().length }
+    }
+  });
+});
+export default r;
+
+src/routes/signals.js
+js
+import { Router } from 'express';
+import axios from 'axios';
+import { parse, ServiceUpsertSchema, HeartbeatSchema, PingRequestSchema, PatchStatusSchema } from '../lib/validators.js';
+import { upsertService, recordHeartbeat, getService, manualStatus, pushEvent } from '../lib/store.js';
+import { requireBearer } from '../lib/auth.js';
+import { notifyStatusChange } from '../lib/notify.js';
+
+const r = Router();
+
+// Upsert/register a service (auth)
+r.post('/register', requireBearer, async (req, res) => {
+  const v = parse(ServiceUpsertSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const rec = upsertService(v.data);
+  return res.json({ ok: true, data: rec });
+});
+
+// Heartbeat (auth)
+r.post('/heartbeat', requireBearer, async (req, res) => {
+  const v = parse(HeartbeatSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const rec = recordHeartbeat(v.data.serviceId, v.data.at);
+  if (!rec) return res.status(404).json({ ok: false, error: { message: 'service_not_found' } });
+  return res.json({ ok: true, data: rec });
+});
+
+// Manual status patch (auth)
+r.patch('/status/:serviceId', requireBearer, async (req, res) => {
+  const v = parse(PatchStatusSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const before = getService(req.params.serviceId);
+  if (!before) return res.status(404).json({ ok: false, error: { message: 'service_not_found' } });
+  const updated = manualStatus(req.params.serviceId, v.data.status || before.status);
+  if (!updated) return res.status(500).json({ ok: false, error: { message: 'update_failed' } });
+
+  // optional webhook notify
+  if (before.status !== updated.status) {
+    const snapshot = { id: updated.id, status: updated.status, group: updated.group, lastBeatAt: updated.lastBeatAt };
+    await notifyStatusChange({ serviceId: updated.id, prev: before.status, next: updated.status, at: updated.updatedAt, snapshot });
+  }
+  return res.json({ ok: true, data: updated });
+});
+
+// On-demand ping (auth)
+r.post('/ping', requireBearer, async (req, res) => {
+  const v = parse(PingRequestSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  try {
+    const t0 = Date.now();
+    const fn = v.data.method === 'HEAD' ? axios.head : axios.get;
+    const rres = await fn(v.data.url, { timeout: v.data.timeoutMs, validateStatus: () => true });
+    const ms = Date.now() - t0;
+    const up = rres.status >= 200 && rres.status < 400;
+    return res.json({ ok: true, data: { url: v.data.url, method: v.data.method, status: up ? 'up' : 'down', code: rres.status, ms } });
+  } catch (e) {
+    return res.json({ ok: true, data: { url: v.data.url, method: v.data.method, status: 'down', code: 0, ms: null, error: e.message?.slice(0,160) || 'error' } });
+  }
+});
+
+export default r;
+
+src/routes/metrics.js
+js
+import { Router } from 'express';
+import { parse, QueryListSchema } from '../lib/validators.js';
+import { listServices, getService, deleteService, listEvents } from '../lib/store.js';
+import { requireBearer } from '../lib/auth.js';
+
+const r = Router();
+
+// Summary (public read)
+r.get('/summary', (req, res) => {
+  const all = listServices();
+  const counts = all.reduce((acc, s) => {
+    acc[s.status] = (acc[s.status] || 0) + 1;
+    return acc;
+  }, {});
+  res.json({ ok: true, data: { totals: { all: all.length, ...counts }, services: all } });
+});
+
+// List with filters (public read)
+r.get('/services', (req, res) => {
+  const q = parse(QueryListSchema, req.query || {});
+  if (!q.ok) return res.status(400).json({ ok: false, error: q.error });
+  res.json({ ok: true, data: listServices(q.data) });
+});
+
+// Get one (public read)
+r.get('/services/:id', (req, res) => {
+  const s = getService(req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: s });
+});
+
+// Delete (auth)
+r.delete('/services/:id', requireBearer, (req, res) => {
+  const ok = deleteService(req.params.id);
+  if (!ok) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: { id: req.params.id, deleted: true } });
+});
+
+// Recent events (public read)
+r.get('/events', (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+  res.json({ ok: true, data: { items: listEvents(limit) } });
+});
+
+export default r;
+
+README.md
+md
+# metrics-health
+
+Central heartbeat, ping, and status-change notifier for your internal microservices. No external automation — pure observability.
+
+## Env
+- AUTH_BEARER_TOKEN (default: `metrics_token_123`)
+- WEBHOOK_URL (optional; receives POST on status changes)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Health (no auth)
+curl -s https://<your-repl>.replit.app/api/v1/health | jq .
+
+## Register a service
+curl -s -X POST https://<your-repl>.replit.app/api/v1/signals/register \
+  -H "Authorization: Bearer metrics_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"content-scheduler","displayName":"Content Scheduler","group":"core","url":"https://<sched>/api/v1/health","ttlMs":120000}'
+
+## Send heartbeat
+curl -s -X POST https://<your-repl>.replit.app/api/v1/signals/heartbeat \
+  -H "Authorization: Bearer metrics_token_123" -H "Content-Type: application/json" \
+  -d '{"serviceId":"content-scheduler"}'
+
+## On-demand ping
+curl -s -X POST https://<your-repl>.replit.app/api/v1/signals/ping \
+  -H "Authorization: Bearer metrics_token_123" -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/","method":"HEAD","timeoutMs":5000}'
+
+## Summary (public)
+curl -s https://<your-repl>.replit.app/api/v1/metrics/summary | jq .
+
+## Recent events (public)
+curl -s https://<your-repl>.replit.app/api/v1/metrics/events | jq .

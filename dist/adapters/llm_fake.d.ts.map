@@ -1,0 +1,1 @@
+{"version":3,"file":"llm_fake.d.ts","sourceRoot":"","sources":["../../src/adapters/llm_fake.ts"],"names":[],"mappings":"AAAA;;GAEG;AAEH,OAAO,EAAE,UAAU,EAAE,UAAU,EAAE,WAAW,EAAgD,MAAM,cAAc,CAAC;AAEjH,qBAAa,WAAY,YAAW,UAAU;IAE5C,MAAM,IAAI,OAAO;IAIX,GAAG,CAAC,OAAO,EAAE,UAAU,GAAG,OAAO,CAAC,WAAW,CAAC;IAoBpD,OAAO,CAAC,kBAAkB;CAuB3B"}

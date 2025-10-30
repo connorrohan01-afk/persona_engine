@@ -1,0 +1,79 @@
+Extend PersonaEngine with Vault Storage + Delivery. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. All endpoints return JSON { ok, mode(“live”|“dry”), … } with stable deterministic fields. Purpose: store persona assets (images, files, links), issue signed delivery links, enforce per-tenant ACLs, and hand off delivery to Telegram Persona Deployer. Support dry mode when storage keys missing or dry=1.
+
+Add/Modify files:
+	•	app/routes/vaults.py — endpoints for create vault item, list, get, sign, revoke, deliver, claim links.
+	•	app/models_vaults.py — SQLModel: VaultItem, VaultLink, VaultAccessLog.
+	•	app/storage.py — abstraction for S3/Cloudflare R2/local; signed URL generation; MIME/type checks; size limits.
+	•	app/vault_utils.py — filename normalization, checksum hashing (sha256), TTL helpers, content gating (nsfw flags).
+	•	app/config.py — add storage env vars.
+	•	README_ROUTES.md — examples for each route.
+
+Environment variables:
+STORAGE_DRIVER=r2 (allowed: r2|s3|local)
+STORAGE_BUCKET=persona-vault
+STORAGE_PUBLIC_BASE=https://YOUR_APP/cdn
+STORAGE_SIGNING_TTL_S=3600
+STORAGE_MAX_MB=25
+R2_ACCOUNT_ID=xxxx
+R2_ACCESS_KEY_ID=xxxx
+R2_SECRET_ACCESS_KEY=xxxx
+S3_ENDPOINT=https://s3.amazonaws.com (if using S3)
+DEFAULT_TENANT=owner
+DRY_DEFAULT=1 (if set, vault runs in dry unless request overrides)
+If driver creds missing → operate in mode:“dry” with mock URLs under /cdn/mock/…
+
+Data models (SQLModel):
+VaultItem(id, tenant_id, persona_id, kind(“image”|“file”|“link”), name, mime, size_bytes, sha256, storage_key, public_url, nsfw, created_at, updated_at, enabled)
+VaultLink(id, tenant_id, vault_item_id, claim_code, expires_at, single_use, used_count, max_uses, revoked, created_at)
+VaultAccessLog(id, tenant_id, vault_item_id, vault_link_id, channel(“telegram”|“web”|“api”), consumer_id, action(“issued”|“viewed”|“downloaded”|“revoked”), ip, ua, ts)
+
+Storage behavior (app/storage.py):
+	•	put_object(tenant_id, storage_key, bytes|stream, mime) → { storage_key, public_url } (if driver supports public).
+	•	sign_get(storage_key, ttl_s) → { signed_url, expires_at }.
+	•	head(storage_key) → { size_bytes, mime, exists }.
+	•	For local driver, store under ./data/vault/tenant_id/… and serve via FastAPI static /cdn path.
+
+API endpoints (all JSON bodies inline as plain text):
+	1.	POST /api/v1/vaults/item/create
+Request: { “tenant_id”:“owner”, “persona_id”:“p001”, “kind”:“image”, “name”:“promo_1.png”, “mime”:“image/png”, “base64”:“iVBORw0KGgo…=”, “nsfw”:false, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “item”:{“id”:“vi_001”,“tenant_id”:“owner”,“persona_id”:“p001”,“kind”:“image”,“name”:“promo_1.png”,“mime”:“image/png”,“size_bytes”:123456,“sha256”:“ab12…”,“storage_key”:“owner/2025/09/p001/promo_1.png”,“public_url”:“https://YOUR_APP/cdn/owner/2025/09/p001/promo_1.png”} }
+	2.	POST /api/v1/vaults/item/create-link
+Request: { “tenant_id”:“owner”, “vault_item_id”:“vi_001”, “ttl_s”:86400, “single_use”:true, “max_uses”:1 }
+Response: { “ok”:true, “mode”:“live”, “link”:{“id”:“vl_101”,“claim_code”:“c_Z2h10”,“expires_at”:“2025-09-22T12:00:00Z”,“single_use”:true,“max_uses”:1,“url”:“https://YOUR_APP/api/v1/vaults/claim/c_Z2h10”} }
+	3.	GET /api/v1/vaults/item/sign?id=vi_001&ttl_s=3600
+Response: { “ok”:true, “mode”:“live”, “signed_url”:“https://YOUR_APP/cdn/owner/…sig=abc”, “expires_at”:“2025-09-21T13:00:00Z” }
+	4.	POST /api/v1/vaults/link/revoke
+Request: { “tenant_id”:“owner”, “vault_link_id”:“vl_101” }
+Response: { “ok”:true, “mode”:“live”, “revoked”:true }
+	5.	GET /api/v1/vaults/list?tenant_id=owner&persona_id=p001&kind=image&limit=20
+Response: { “ok”:true, “mode”:“live”, “items”:[{“id”:“vi_001”,“name”:“promo_1.png”,“mime”:“image/png”,“public_url”:“https://YOUR_APP/cdn/owner/…”}] }
+	6.	POST /api/v1/vaults/deliver/telegram
+Request: { “tenant_id”:“owner”, “telegram_persona_id”:“tp_001”, “chat_id”:“7484907544”, “vault_item_id”:“vi_001”, “use_signed”:true, “caption”:“Here you go!” }
+Response: { “ok”:true, “mode”:“live”, “sent”:true, “message_id”:“tg_7788” }
+	7.	GET /api/v1/vaults/claim/{claim_code}
+Behavior: if link valid and not expired/revoked and usage within limits, redirect (302) to signed_url for file; otherwise return JSON { ok:false, error:“expired|revoked|not_found” }. For API calls with Accept: application/json return { ok:true, mode:“live”, “signed_url”:”…” } instead of redirect.
+
+Validation & guardrails:
+	•	Reject files > STORAGE_MAX_MB with { ok:false, error:“too_large” }.
+	•	Compute sha256 and deduplicate by (tenant_id, sha256) unless force=true.
+	•	MIME allowlist: image/png, image/jpeg, image/webp, application/pdf, text/plain (extendable). Return { ok:false, error:“mime_not_allowed” } otherwise.
+	•	nsfw flag propagates to metadata; Telegram delivery must avoid inline preview if nsfw=true (send as file).
+	•	All endpoints respect dry mode → do not write storage; simulate URLs under /cdn/mock/… and return mode:“dry”.
+
+Integration points:
+	•	Telegram Persona Deployer: /deliver/telegram uses app/telegram_engine.py to send either file or link with caption; falls back to text + URL if file send fails.
+	•	Images branch: can push generated images straight into vault via item/create.
+	•	Warming/Reddit branches: can reference vault images by vault_item_id when posting image content.
+
+Minimal examples to paste into an n8n HTTP node:
+
+create image item dry:
+{ “method”:“POST”, “url”:“https://YOUR_APP/api/v1/vaults/item/create”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“persona_id”:“p001”,“kind”:“image”,“name”:“promo_1.png”,“mime”:“image/png”,“base64”:“iVBORw0KGgo…”,“nsfw”:false,“dry”:true} }
+
+create signed link:
+{ “method”:“POST”, “url”:“https://YOUR_APP/api/v1/vaults/item/create-link”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“vault_item_id”:“vi_001”,“ttl_s”:86400,“single_use”:true,“max_uses”:1} }
+
+deliver in telegram:
+{ “method”:“POST”, “url”:“https://YOUR_APP/api/v1/vaults/deliver/telegram”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“telegram_persona_id”:“tp_001”,“chat_id”:“7484907544”,“vault_item_id”:“vi_001”,“use_signed”:true,“caption”:“Here you go!”} }
+
+Deliverable: a production-ready Vaults subsystem with storage abstraction (R2/S3/local), signed URLs, claim links, per-tenant ACLs, Telegram delivery, nsfw handling, dry/live modes, and clean, predictable JSON responses.

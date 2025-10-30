@@ -1,0 +1,297 @@
+/* Custom CSS for Content Automation Platform */
+/* Minimal custom styles to complement Bootstrap Replit dark theme */
+
+/* Root variables for consistency with dark theme */
+:root {
+    --content-card-hover: rgba(255, 255, 255, 0.05);
+    --content-border-radius: 0.5rem;
+    --content-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    --sidebar-bg: rgba(255, 255, 255, 0.02);
+}
+
+/* Content generation specific styles */
+.content-title {
+    font-weight: 500;
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+}
+
+/* Enhanced card hover effects */
+.card:hover {
+    background-color: var(--content-card-hover);
+    transition: background-color 0.2s ease;
+}
+
+/* Chart containers */
+.chart-container {
+    position: relative;
+    height: 300px;
+}
+
+/* Platform connection cards */
+.platform-card {
+    transition: all 0.3s ease;
+    border-radius: var(--content-border-radius);
+}
+
+.platform-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--content-shadow);
+}
+
+/* Loading spinner overlay */
+.loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    border-radius: var(--content-border-radius);
+}
+
+/* Hashtags display */
+.hashtags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
+.hashtags .badge {
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+/* Content preview enhancements */
+#previewContent {
+    min-height: 200px;
+}
+
+/* Analytics progress bars */
+.progress {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Form enhancements */
+.form-control:focus,
+.form-select:focus {
+    box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.25);
+}
+
+/* Status badges with animations */
+.badge {
+    transition: all 0.2s ease;
+}
+
+.badge:hover {
+    transform: scale(1.05);
+}
+
+/* Empty state illustrations */
+.empty-state {
+    padding: 3rem 1rem;
+    text-align: center;
+}
+
+.empty-state i {
+    opacity: 0.6;
+    margin-bottom: 1.5rem;
+}
+
+/* Navigation enhancements */
+.navbar-brand {
+    font-weight: 600;
+}
+
+/* Button group enhancements */
+.btn-group-sm .btn {
+    padding: 0.25rem 0.5rem;
+}
+
+/* Table enhancements */
+.table-hover tbody tr:hover {
+    background-color: var(--content-card-hover);
+}
+
+/* Modal enhancements */
+.modal-content {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Alert enhancements */
+.alert {
+    border: none;
+    border-radius: var(--content-border-radius);
+}
+
+/* Card header enhancements */
+.card-header {
+    background-color: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Pagination enhancements */
+.pagination {
+    --bs-pagination-bg: rgba(255, 255, 255, 0.05);
+    --bs-pagination-border-color: rgba(255, 255, 255, 0.1);
+    --bs-pagination-hover-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Quick action buttons */
+.quick-actions .btn {
+    min-height: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Content library filters */
+.filter-card {
+    background-color: var(--sidebar-bg);
+    border-radius: var(--content-border-radius);
+}
+
+/* Analytics cards */
+.analytics-card {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.05) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Platform icons */
+.platform-icon {
+    width: 2rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Content generation form */
+.generation-form {
+    background-color: var(--sidebar-bg);
+    border-radius: var(--content-border-radius);
+    padding: 1.5rem;
+}
+
+/* Schedule calendar */
+.schedule-time-slots {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+}
+
+/* Engagement rate indicators */
+.engagement-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+/* Content preview */
+.content-preview {
+    background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--content-border-radius);
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+/* Statistics cards */
+.stat-card {
+    text-align: center;
+    padding: 2rem 1rem;
+    border-radius: var(--content-border-radius);
+}
+
+.stat-card h4 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+/* Connection status indicators */
+.connection-status {
+    position: relative;
+}
+
+.connection-status::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--bs-dark);
+}
+
+.connection-status.connected::before {
+    background-color: var(--bs-success);
+}
+
+.connection-status.disconnected::before {
+    background-color: var(--bs-secondary);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .stat-card h4 {
+        font-size: 2rem;
+    }
+    
+    .content-title {
+        max-width: 150px;
+    }
+    
+    .btn-group-sm .btn {
+        padding: 0.125rem 0.25rem;
+    }
+}
+
+/* Print styles */
+@media print {
+    .btn, .navbar, .modal, .alert-dismissible .btn-close {
+        display: none !important;
+    }
+    
+    .card {
+        border: 1px solid #000 !important;
+        break-inside: avoid;
+    }
+}
+
+/* Focus improvements for accessibility */
+.btn:focus,
+.form-control:focus,
+.form-select:focus {
+    outline: 2px solid var(--bs-primary);
+    outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+    .card {
+        border-width: 2px;
+    }
+    
+    .badge {
+        border: 1px solid currentColor;
+    }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

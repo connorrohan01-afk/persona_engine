@@ -1,0 +1,58 @@
+Extend PersonaEngine with Telegram Persona Deployer. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. Endpoints always return JSON { ok, mode(“live”|“dry”), … }. This branch auto-creates Telegram persona bots, links them to existing personas, deploys upsell flows, and manages message routing.
+
+Add/Modify files:
+	•	app/routes/telegram_persona.py — endpoints for deploy, link, toggle, send test, get status.
+	•	app/models_telegram_persona.py — SQLModel: TelegramPersona(id, tenant_id, persona_id, bot_token, username, linked, enabled, created_at, updated_at).
+	•	app/telegram_engine.py — wrapper for sending messages, handling updates, plugging into upsell flows.
+	•	app/config.py — add TELEGRAM_DEFAULT_UPSELL env.
+
+Environment variables:
+TELEGRAM_DEFAULT_UPSELL=“Check out my vault 🔗”
+TELEGRAM_WEBHOOK_BASE=“https://YOUR_APP/api/v1/telegram/webhook”
+DRY_DEFAULT=1
+
+Data models (SQLModel):
+TelegramPersona(id, tenant_id, persona_id, bot_token, username, linked, enabled, created_at, updated_at)
+
+API endpoints:
+	1.	POST /api/v1/telegram/persona/deploy
+Request: { “tenant_id”:“owner”, “persona_id”:“p001”, “bot_token”:“123:ABC”, “username”:“mybot”, “enabled”:true, “dry”:false }
+Response: { “ok”:true, “mode”:“live”, “telegram_persona_id”:“tp_001”, “webhook_url”:“https://YOUR_APP/api/v1/telegram/webhook/tp_001” }
+	2.	POST /api/v1/telegram/persona/link
+Request: { “telegram_persona_id”:“tp_001”, “persona_id”:“p001” }
+Response: { “ok”:true, “linked”:true }
+	3.	POST /api/v1/telegram/persona/send-test
+Request: { “telegram_persona_id”:“tp_001”, “chat_id”:“7484907544”, “text”:“Hello from persona” }
+Response: { “ok”:true, “mode”:“live”, “sent”:true }
+	4.	POST /api/v1/telegram/persona/toggle
+Request: { “telegram_persona_id”:“tp_001”, “enabled”:false }
+Response: { “ok”:true, “mode”:“live”, “enabled”:false }
+	5.	GET /api/v1/telegram/persona/status?id=tp_001
+Response: { “ok”:true, “persona”:{“id”:“tp_001”,“username”:“mybot”,“linked”:true,“enabled”:true} }
+
+Webhook:
+POST /api/v1/telegram/webhook/{telegram_persona_id}
+	•	Accepts Telegram update JSON.
+	•	Extract chat_id, message.text.
+	•	If text contains upsell trigger (configurable or default TELEGRAM_DEFAULT_UPSELL), auto-reply with upsell link.
+	•	Always log message + response.
+
+Telegram engine (app/telegram_engine.py):
+	•	send_message(bot_token, chat_id, text).
+	•	parse_update(update_json) → returns { chat_id, text }.
+	•	route_message(update_json, persona_config). If upsell trigger → send upsell text.
+
+Integration:
+	•	Links to Persona Registry so each persona has a Telegram bot face.
+	•	Vault delivery endpoint (existing branch) can be triggered as upsell.
+	•	n8n can call /deploy and /link automatically after persona creation.
+
+Example test calls:
+
+deploy persona bot:
+{ “method”:“POST”, “url”:“https://YOUR_APP/api/v1/telegram/persona/deploy”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“tenant_id”:“owner”,“persona_id”:“p001”,“bot_token”:“123:ABC”,“username”:“mybot”,“enabled”:true,“dry”:true} }
+
+send test message:
+{ “method”:“POST”, “url”:“https://YOUR_APP/api/v1/telegram/persona/send-test”, “headers”:{“Authorization”:“Bearer YOUR_TOKEN”,“Content-Type”:“application/json”}, “body”:{“telegram_persona_id”:“tp_001”,“chat_id”:“7484907544”,“text”:“hello test”} }
+
+Deliverable: production-ready Telegram deployer for personas, linked to registry, with upsell flows and webhook support. It should let you spawn persona bots, link them to Reddit personas, and route conversations into upsells or vaults.

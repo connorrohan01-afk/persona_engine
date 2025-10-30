@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${SCHEDULER_URL}/api/v1/jobs",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"accountId\":\"acc_123\", \"every\": { \"value\":30, \"unit\":\"minutes\" }, \"task\": { \"type\":\"post\", \"subreddit\":\"r/pics\", \"text\":\"hi from schedule\" } }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${SCHEDULER_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "sched-job",
+      "name": "Scheduler: Create Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}

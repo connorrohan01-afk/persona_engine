@@ -1,0 +1,39 @@
+{
+  "id": "J0001",
+  "persona_id": "P0003",
+  "style": "boudoir_soft",
+  "count": 2,
+  "slots": {
+    "outfit": "silk",
+    "mood": "soft",
+    "setting": "studio"
+  },
+  "seeds": [
+    2100,
+    2101
+  ],
+  "created_at": "2025-10-24T21:09:50.733335Z",
+  "mode": "fake",
+  "images": [
+    {
+      "id": "J0001_img_1",
+      "url": "https://picsum.photos/512/512?random=2100",
+      "seed": 2100,
+      "prompt": "outfit: silk, mood: soft, setting: studio",
+      "style": "boudoir_soft",
+      "filename": "J0001_boudoir_soft_001.jpg"
+    },
+    {
+      "id": "J0001_img_2",
+      "url": "https://picsum.photos/512/512?random=2101",
+      "seed": 2101,
+      "prompt": "outfit: silk, mood: soft, setting: studio",
+      "style": "boudoir_soft",
+      "filename": "J0001_boudoir_soft_002.jpg"
+    }
+  ],
+  "files": [
+    "J0001_boudoir_soft_001.jpg",
+    "J0001_boudoir_soft_002.jpg"
+  ]
+}

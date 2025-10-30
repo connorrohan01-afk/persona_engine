@@ -1,0 +1,253 @@
+You are my Replit build engineer. Create a microservice named scheduler-service (Node.js + Express + BullMQ) that safely queues and schedules jobs for posting, warming, and health checks. Jobs are simulation-only: they enqueue payloads, wait/delay, then mark results in memory. No third-party posting or rate-limit evasion.
+
+REQUIREMENTS
+• Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, bullmq, ioredis.
+• Structure: server.js, src/lib/{auth,validators,queue}.js, src/routes/{jobs,health}.js, README.md, package.json.
+• Auth: Bearer via AUTH_BEARER_TOKEN (default sched_token_123).
+• Redis: use REDIS_URL (default redis://localhost:6379).
+• Envelope: all JSON → { ok: true|false, data?, error? }.
+• Endpoints:
+  - GET  /api/v1/health (no auth).
+  - POST /api/v1/jobs { type, payload, delayMs? } → enqueue job.
+  - GET  /api/v1/jobs/:id → fetch status/result.
+  - GET  /api/v1/jobs → list latest 50 jobs.
+  - DELETE /api/v1/jobs/:id → remove job.
+• Job lifecycle: queued → active → completed|failed.
+• Safe simulation: execution waits delayMs or default 500ms, then marks complete with mock result.
+• Observability: log job events (added, started, completed, failed). Print AVAILABLE_ROUTES on boot.
+
+FILES TO CREATE (exact contents)
+
+package.json
+json
+{
+  "name": "scheduler-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bullmq": "^4.17.0",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "ioredis": "^5.4.1",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  }
+}
+
+server.js
+js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import healthRouter from './src/routes/health.js';
+import jobsRouter from './src/routes/jobs.js';
+import { bearerAuth } from './src/lib/auth.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 300, standardHeaders: true });
+app.use(limiter);
+
+// Health
+app.use('/api/v1/health', healthRouter);
+
+// Protected
+app.use('/api/v1/jobs', bearerAuth, jobsRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+function printRoutes() {
+  const routes = [];
+  const scan = (stack, base = '') => {
+    stack.forEach((l) => {
+      if (l.route) {
+        const m = Object.keys(l.route.methods).map(x => x.toUpperCase()).join(',');
+        routes.push(`${m.padEnd(6)} ${base}${l.route.path}`);
+      } else if (l.name === 'router' && l.handle?.stack) {
+        scan(l.handle.stack, base);
+      }
+    });
+  };
+  scan(app._router.stack);
+  console.log('AVAILABLE_ROUTES');
+  routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+  console.log(`scheduler-service listening on :${PORT}`);
+  printRoutes();
+  console.log('READY: scheduler-service');
+});
+
+export default app;
+
+src/lib/auth.js
+js
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'sched_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, role: 'scheduler' };
+  next();
+}
+
+src/lib/validators.js
+js
+import { z } from 'zod';
+
+export const JobCreateSchema = z.object({
+  type: z.string().min(1),
+  payload: z.record(z.any()).optional(),
+  delayMs: z.number().int().min(0).max(86400000).optional()
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+src/lib/queue.js
+js
+import { Queue, Worker, QueueEvents } from 'bullmq';
+import IORedis from 'ioredis';
+import { nanoid } from 'nanoid';
+
+const url = process.env.REDIS_URL || 'redis://localhost:6379';
+const conn = new IORedis(url);
+
+export const q = new Queue('jobs', { connection: conn });
+export const events = new QueueEvents('jobs', { connection: conn });
+
+export function addJob({ type, payload, delayMs }) {
+  return q.add(type, payload || {}, { jobId: nanoid(), delay: delayMs || 0 });
+}
+
+export function worker() {
+  return new Worker('jobs', async (job) => {
+    console.log('[JOB start]', job.id, job.name);
+    await new Promise(r => setTimeout(r, job.opts.delay || 500));
+    return { simulated: true, payload: job.data };
+  }, { connection: conn });
+}
+
+export function listenEvents() {
+  events.on('completed', (e) => console.log('[JOB completed]', e.jobId));
+  events.on('failed', (e) => console.log('[JOB failed]', e.jobId, e.failedReason));
+  events.on('active', (e) => console.log('[JOB active]', e.jobId));
+}
+
+worker();
+listenEvents();
+
+src/routes/health.js
+js
+import { Router } from 'express';
+const r = Router();
+r.get('/', (_req, res) => res.json({ ok: true, data: { service: 'scheduler-service', status: 'healthy' } }));
+export default r;
+
+src/routes/jobs.js
+js
+import { Router } from 'express';
+import { parse, JobCreateSchema } from '../lib/validators.js';
+import { addJob, q } from '../lib/queue.js';
+
+const r = Router();
+
+// POST /jobs
+r.post('/', async (req, res) => {
+  const v = parse(JobCreateSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  try {
+    const j = await addJob(v.data);
+    res.json({ ok: true, data: { id: j.id, name: j.name, opts: j.opts } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: { message: e.message } });
+  }
+});
+
+// GET /jobs/:id
+r.get('/:id', async (req, res) => {
+  try {
+    const j = await q.getJob(req.params.id);
+    if (!j) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+    res.json({ ok: true, data: { id: j.id, name: j.name, state: await j.getState(), returnvalue: j.returnvalue } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: { message: e.message } });
+  }
+});
+
+// GET /jobs
+r.get('/', async (_req, res) => {
+  try {
+    const jobs = await q.getJobs(['waiting','active','completed','failed'], 0, 50, true);
+    const data = jobs.map(j => ({ id: j.id, name: j.name, state: j.state }));
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: { message: e.message } });
+  }
+});
+
+// DELETE /jobs/:id
+r.delete('/:id', async (req, res) => {
+  try {
+    const j = await q.getJob(req.params.id);
+    if (!j) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+    await j.remove();
+    res.json({ ok: true, data: { id: req.params.id, deleted: true } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: { message: e.message } });
+  }
+});
+
+export default r;
+
+README.md
+md
+# scheduler-service
+
+Queues and simulates job execution using BullMQ. No external posting.
+
+## Env
+- AUTH_BEARER_TOKEN (default `sched_token_123`)
+- REDIS_URL (default `redis://localhost:6379`)
+- PORT=3000
+
+## Run
+npm run dev
+
+## Health
+curl -s https://<your-repl>.replit.app/api/v1/health
+
+## Enqueue job
+curl -s -X POST https://<your-repl>.replit.app/api/v1/jobs \
+  -H "Authorization: Bearer sched_token_123" -H "Content-Type: application/json" \
+  -d '{"type":"post","payload":{"msg":"hi"},"delayMs":1000}'
+
+## Check job
+curl -s https://<your-repl>.replit.app/api/v1/jobs/<id> \
+  -H "Authorization: Bearer sched_token_123"
+
+## List jobs
+curl -s https://<your-repl>.replit.app/api/v1/jobs \
+  -H "Authorization: Bearer sched_token_123"
+
+## Delete job
+curl -s -X DELETE https://<your-repl>.replit.app/api/v1/jobs/<id> \
+  -H "Authorization: Bearer sched_token_123"

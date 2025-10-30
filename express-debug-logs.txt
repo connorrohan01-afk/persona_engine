@@ -1,0 +1,69 @@
+(node:1138) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/workspace/server.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/runner/workspace/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+account-intake listening on :3000
+AVAILABLE_ROUTES
+DELETE /api/v1/accounts/:id
+DELETE /api/v1/proxies/:id
+DELETE /api/v1/vaults/:id
+GET    /api/v1/accounts
+GET    /api/v1/accounts/:id
+GET    /api/v1/health
+GET    /api/v1/n8n/get/:id
+GET    /api/v1/proxies
+GET    /api/v1/proxies/:id
+GET    /api/v1/vaults
+GET    /api/v1/vaults/:id
+PATCH  /api/v1/accounts/:id
+PATCH  /api/v1/proxies/:id
+PATCH  /api/v1/vaults/:id
+POST   /api/v1/accounts
+POST   /api/v1/n8n/activate/:id
+POST   /api/v1/n8n/create
+POST   /api/v1/proxies
+POST   /api/v1/vaults
+READY
+[BUILD] Calling create URL: https://content-maestro-connorrohan01.replit.app/api/v1/n8n/create
+[BUILD] With bearer: builder_token_123
+[BUILD] With payload: {
+  "name": "Generated Workflow",
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "id": "Sched",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "unit": "minutes",
+              "value": 30
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {}
+}
+[BUILD] Create response: {
+  "ok": false,
+  "status": 404,
+  "error": {
+    "message": "HTTP 404",
+    "body": {
+      "raw": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n"
+    }
+  }
+}
+POST /api/v1/build 502 310 - 217.160 ms

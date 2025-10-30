@@ -1,0 +1,47 @@
+Extend PersonaEngine with Account Sessions + Proxy + Captcha. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. All endpoints return stable JSON. Dry mode when keys missing or dry=1.
+
+Add files:
+	•	app/routes/accounts.py — endpoints for session lifecycle (create, verify, solve captcha, proxy assignment).
+	•	app/models_accounts.py — SQLModel tables for Account, Session, Proxy, CaptchaJob.
+	•	app/providers/captcha.py — wrappers for 2Captcha, CapMonster, AntiCaptcha, mock fallback.
+	•	app/providers/proxy.py — proxy pool manager.
+	•	app/sessions.py — session manager: save/load cookies, headers, assign proxies.
+
+Environment:
+	•	CAPTCHA_PROVIDER=2captcha|capmonster|anticaptcha|mock (default mock).
+	•	CAPTCHA_KEY=xxxx.
+	•	PROXY_POOL_FILE=./proxies.txt (line per proxy, host:port:user:pass).
+	•	SESSION_DIR=./_sessions.
+
+Database models:
+	•	Account(id, tenant_id, platform, username, email, created_at).
+	•	Session(id, account_id, tenant_id, status, cookies_path, proxy_id, created_at, updated_at).
+	•	Proxy(id, host, port, user, pass, last_used_at, healthy).
+	•	CaptchaJob(id, tenant_id, provider, site_key, url, status, solution, error, created_at).
+
+Sessions (app/sessions.py):
+	•	new_session(account, proxy) → writes cookies.json under SESSION_DIR/{account_id}.
+	•	load_session(account) → loads cookies, proxy.
+	•	update_status(session, status).
+
+Captcha (app/providers/captcha.py):
+	•	solve_captcha(provider, site_key, url, dry). If mock or dry: return "MOCK-SOLUTION-123". Otherwise call provider API, poll until solved.
+
+Accounts API (app/routes/accounts.py):
+	•	POST /api/v1/accounts/create → body { “tenant_id”:“owner”,“platform”:“reddit”,“username”:“foo”,“email”:“bar@example.com”,“proxy”:“host:port:user:pass”,“dry”:false } → creates Account + Session, saves cookies.json (empty if dry), returns { “ok”:true,“account_id”:“acc_xxx”,“session_id”:“ses_xxx”,“cookies_path”:”_sessions/acc_xxx/cookies.json”,“proxy_id”:“prx_xxx” }.
+	•	POST /api/v1/accounts/session/load → body { “tenant_id”:“owner”,“account_id”:“acc_xxx” } → returns { “ok”:true,“session_id”:“ses_xxx”,“status”:“active”,“cookies_path”:”…”,“proxy”:“host:port” }.
+	•	POST /api/v1/accounts/session/update → body { “session_id”:“ses_xxx”,“status”:“warm” } → returns { “ok”:true }.
+	•	POST /api/v1/accounts/proxy/assign → body { “session_id”:“ses_xxx” } → picks least-used proxy, updates session, returns { “ok”:true,“proxy”:“host:port” }.
+	•	POST /api/v1/accounts/captcha/solve → body { “tenant_id”:“owner”,“site_key”:“xxxx”,“url”:“https://…”,“dry”:true } → creates CaptchaJob, solves via provider or mock, returns { “ok”:true,“solution”:“MOCK-SOLUTION-123”,“job_id”:“cap_xxx” }.
+	•	GET /api/v1/accounts/captcha/status?id=cap_xxx → returns { “ok”:true,“status”:“solved”,“solution”:“MOCK-SOLUTION-123” }.
+
+Storage: sessions persisted under SESSION_DIR. Proxy pool loaded from file.
+
+Safety: max 5 captcha retries. If provider key missing, always mock.
+
+Tests:
+	•	Create dry account → cookies.json exists with empty dict.
+	•	Assign proxy rotates among pool.
+	•	Solve captcha dry → returns MOCK-SOLUTION-123.
+
+Deliverable: working account/session/captcha/proxy APIs; ready for n8n Set nodes to automate account creation + warming.

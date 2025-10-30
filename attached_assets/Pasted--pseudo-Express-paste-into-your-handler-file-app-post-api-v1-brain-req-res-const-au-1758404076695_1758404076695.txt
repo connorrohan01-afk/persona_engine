@@ -1,0 +1,57 @@
+// pseudo-Express; paste into your handler file
+app.post('/api/v1/brain', (req, res) => {
+  const auth = req.get('authorization') || '';
+  const expected = `Bearer ${process.env.REPLIT_BRAIN_TOKEN}`;
+  if (auth !== expected) return res.status(401).json({ status: 'error', error: { message: 'unauthorized' } });
+
+  const { action, chat_id, text = '', payload = {} } = req.body || {};
+  const a = (action || '').toLowerCase().trim();
+
+  // very small interpreter for convenience
+  const t = String(text || '');
+  let act = a;
+  if (!act) {
+    if (/^\/?\s*build\b/i.test(t)) act = 'create';
+    else if (/^\/?\s*activate\b/i.test(t)) act = 'activate';
+    else if (/^\/?\s*get\b/i.test(t)) act = 'get';
+    else act = 'create';
+  }
+
+  // do the work; these are your existing helpers
+  try {
+    if (act === 'create') {
+      const name = payload.name || (t.match(/^\/?build\s+(\S+)/i)?.[1] ?? 'Generated-Workflow');
+      const spec = payload.spec || t.replace(/^\/?build\s+\S+\s*/i, '').trim();
+      // call n8n or your builder here…
+      return res.json({
+        ok: true, status: 'created',
+        message: `✅ Created “${name}”${spec ? ` — ${spec}` : ''}`,
+        data: { name, spec }
+      });
+    }
+
+    if (act === 'activate') {
+      const id = payload.workflow_id || t.split(/\s+/)[1] || '';
+      // call n8n activate…
+      return res.json({
+        ok: true, status: 'activated',
+        message: `🟢 Activated workflow ${id}`,
+        data: { workflow_id: id }
+      });
+    }
+
+    if (act === 'get') {
+      const id = payload.workflow_id || t.split(/\s+/)[1] || '';
+      // fetch status…
+      return res.json({
+        ok: true, status: 'fetched',
+        message: `ℹ️ Status for ${id}: running`,
+        data: { workflow_id: id, status: 'running' }
+      });
+    }
+
+    return res.status(400).json({ ok: false, status: 'error', error: { message: `unknown action: ${act}` } });
+  } catch (e) {
+    return res.status(500).json({ ok: false, status: 'error', error: { message: e.message } });
+  }
+});

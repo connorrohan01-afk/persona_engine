@@ -1,0 +1,367 @@
+You are my Replit build engineer. Create a microservice named "observability-hub" (Node.js + Express) that aggregates health, counters, and per-persona activity across my other services. It must be SAFE (no third-party automations), accept push-style event ingest, and expose JSON reports for n8n/Telegram to read.
+
+GOALS (must follow)
+- Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid.
+- Structure: server.js, src/lib/{auth,validators,store}.js, src/routes/{health,events,metrics,report}.js, README.md, package.json.
+- Auth: Bearer via AUTH_BEARER_TOKEN (default "obs_token_123") for all routes except /api/v1/health.
+- Storage: In-memory. Collections: events, gauges (key→number), counters (key→number), personas (id→stats).
+- Events: push-only JSON; NO external calls. Timestamps ISO.
+- Endpoints under /api/v1. Print AVAILABLE_ROUTES and "READY" on boot.
+- Envelope every response: { ok: true|false, data?, error? }.
+- Rate limit: 300 req / 5min default.
+- README with example curl.
+
+FILES TO CREATE (exact contents below)
+
+/package.json
+{
+  "name": "observability-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "zod": "^3.23.8",
+    "nanoid": "^5.0.7"
+  }
+}
+
+/server.js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { bearerAuth } from './src/lib/auth.js';
+import healthRouter from './src/routes/health.js';
+import eventsRouter from './src/routes/events.js';
+import metricsRouter from './src/routes/metrics.js';
+import reportRouter from './src/routes/report.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+app.use(rateLimit({ windowMs: 5 * 60 * 1000, max: 300, standardHeaders: true }));
+
+// Public health
+app.use('/api/v1/health', healthRouter);
+
+// Protected
+app.use('/api/v1/events', bearerAuth, eventsRouter);
+app.use('/api/v1/metrics', bearerAuth, metricsRouter);
+app.use('/api/v1/report', bearerAuth, reportRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+// Route listing
+function listRoutes() {
+  const lines = [];
+  app._router.stack.forEach((layer) => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase()).join(',');
+      lines.push(`${methods.padEnd(6)} ${layer.route.path}`);
+    } else if (layer.name === 'router' && layer.handle.stack) {
+      layer.handle.stack.forEach((h) => {
+        if (h.route) {
+          const methods = Object.keys(h.route.methods).map(m => m.toUpperCase()).join(',');
+          let base = layer.regexp?.toString() || '';
+          base = base.replace(/^\/\^\\/, '/').replace(/\\\/\?\$.*$/, '');
+          lines.push(`${methods.padEnd(6)} ${base}${h.route.path}`);
+        }
+      });
+    }
+  });
+  console.log('AVAILABLE_ROUTES');
+  lines.sort().forEach(l => console.log(l));
+}
+
+app.listen(PORT, () => {
+  console.log(`observability-hub listening on :${PORT}`);
+  listRoutes();
+  console.log('READY');
+});
+
+export default app;
+
+/src/lib/auth.js
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'obs_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, role: 'service' };
+  next();
+}
+
+/src/lib/validators.js
+import { z } from 'zod';
+
+export const EventIngestSchema = z.object({
+  type: z.string().min(1),             // e.g. "post_success","post_fail","warm_tick","click","signup"
+  personaId: z.string().optional(),
+  accountId: z.string().optional(),
+  platform: z.string().optional(),     // e.g. "reddit"
+  meta: z.record(z.any()).optional(),
+  at: z.string().datetime().optional() // ISO timestamp; if missing, server fills
+});
+
+export const CounterSchema = z.object({
+  key: z.string().min(1),              // e.g. "posts.success","posts.fail","clicks"
+  delta: z.number().int().default(1)
+});
+
+export const GaugeSchema = z.object({
+  key: z.string().min(1),              // e.g. "queue.depth","poster.lag_ms"
+  value: z.number()
+});
+
+export const ReportQuerySchema = z.object({
+  window: z.enum(['1h','6h','24h','7d','30d']).default('24h'),
+  personaId: z.string().optional()
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+/src/lib/store.js
+import { nanoid } from 'nanoid';
+
+const events = [];                 // [{ id, type, personaId, accountId, platform, meta, at }]
+const counters = new Map();        // key -> number
+const gauges = new Map();          // key -> number
+const personas = new Map();        // personaId -> { postsOk, postsFail, clicks, warms, lastAt, accounts: Set }
+
+function nowISO() { return new Date().toISOString(); }
+
+export function addEvent(evt) {
+  const id = nanoid();
+  const at = evt.at || nowISO();
+  const rec = { id, ...evt, at };
+  events.push(rec);
+
+  // roll up persona stats
+  if (evt.personaId) {
+    if (!personas.has(evt.personaId)) {
+      personas.set(evt.personaId, { postsOk:0, postsFail:0, clicks:0, warms:0, lastAt:null, accounts:new Set() });
+    }
+    const p = personas.get(evt.personaId);
+    if (evt.type === 'post_success') p.postsOk++;
+    if (evt.type === 'post_fail')    p.postsFail++;
+    if (evt.type === 'click')        p.clicks++;
+    if (evt.type === 'warm_tick')    p.warms++;
+    if (evt.accountId) p.accounts.add(evt.accountId);
+    p.lastAt = at;
+  }
+
+  return rec;
+}
+
+export function incCounter(key, delta = 1) {
+  counters.set(key, (counters.get(key) || 0) + delta);
+  return { key, value: counters.get(key) };
+}
+
+export function setGauge(key, value) {
+  gauges.set(key, value);
+  return { key, value };
+}
+
+export function getMetrics() {
+  const countersObj = Object.fromEntries(counters.entries());
+  const gaugesObj = Object.fromEntries(gauges.entries());
+  return { counters: countersObj, gauges: gaugesObj };
+}
+
+export function listEvents({ since } = {}) {
+  if (!since) return events.slice(-500); // last 500
+  const sinceTs = new Date(since).getTime();
+  return events.filter(e => new Date(e.at).getTime() >= sinceTs).slice(-2000);
+}
+
+export function personaSnapshot(personaId) {
+  if (!personaId) return null;
+  const p = personas.get(personaId);
+  if (!p) return null;
+  return {
+    postsOk: p.postsOk,
+    postsFail: p.postsFail,
+    clicks: p.clicks,
+    warms: p.warms,
+    accounts: p.accounts.size,
+    lastAt: p.lastAt
+  };
+}
+
+export function aggregateWindow(msWindow, personaId) {
+  const cutoff = Date.now() - msWindow;
+  const evts = events.filter(e => new Date(e.at).getTime() >= cutoff && (!personaId || e.personaId === personaId));
+  const totals = { post_success:0, post_fail:0, click:0, warm_tick:0 };
+  for (const e of evts) {
+    if (totals[e.type] !== undefined) totals[e.type]++;
+  }
+  return { totals, count: evts.length, since: new Date(cutoff).toISOString() };
+}
+
+/src/routes/health.js
+import { Router } from 'express';
+const r = Router();
+r.get('/', (req, res) => {
+  res.json({ ok: true, data: { service: 'observability-hub', status: 'healthy', time: new Date().toISOString() } });
+});
+export default r;
+
+/src/routes/events.js
+import { Router } from 'express';
+import { parse, EventIngestSchema } from '../lib/validators.js';
+import { addEvent } from '../lib/store.js';
+
+const r = Router();
+
+// POST /events -> ingest one or many events
+r.post('/', (req, res) => {
+  const body = Array.isArray(req.body) ? req.body : [req.body || {}];
+  const accepted = [];
+  const errors = [];
+
+  for (const item of body) {
+    const v = parse(EventIngestSchema, item);
+    if (!v.ok) {
+      errors.push(v.error);
+      continue;
+    }
+    const saved = addEvent(v.data);
+    accepted.push(saved);
+  }
+  if (accepted.length === 0) return res.status(400).json({ ok: false, error: { message: 'no_valid_events', errors } });
+  res.json({ ok: true, data: { accepted, errors } });
+});
+
+export default r;
+
+/src/routes/metrics.js
+import { Router } from 'express';
+import { parse, CounterSchema, GaugeSchema } from '../lib/validators.js';
+import { incCounter, setGauge, getMetrics } from '../lib/store.js';
+
+const r = Router();
+
+r.get('/', (req, res) => {
+  res.json({ ok: true, data: getMetrics() });
+});
+
+r.post('/counter', (req, res) => {
+  const v = parse(CounterSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const out = incCounter(v.data.key, v.data.delta ?? 1);
+  res.json({ ok: true, data: out });
+});
+
+r.post('/gauge', (req, res) => {
+  const v = parse(GaugeSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const out = setGauge(v.data.key, v.data.value);
+  res.json({ ok: true, data: out });
+});
+
+export default r;
+
+/src/routes/report.js
+import { Router } from 'express';
+import { parse, ReportQuerySchema } from '../lib/validators.js';
+import { aggregateWindow, personaSnapshot, listEvents, getMetrics } from '../lib/store.js';
+
+const r = Router();
+
+function windowMs(win) {
+  return ({
+    '1h': 3600e3,
+    '6h': 21600e3,
+    '24h': 86400e3,
+    '7d': 604800e3,
+    '30d': 2592000e3
+  })[win] || 86400e3;
+}
+
+// GET /report?window=24h&personaId=xyz
+r.get('/', (req, res) => {
+  const v = parse(ReportQuerySchema, { window: req.query.window, personaId: req.query.personaId });
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  const agg = aggregateWindow(windowMs(v.data.window), v.data.personaId);
+  const persona = v.data.personaId ? personaSnapshot(v.data.personaId) : null;
+  const metrics = getMetrics();
+  res.json({ ok: true, data: { window: v.data.window, totals: agg.totals, persona, metrics } });
+});
+
+// GET /report/events?since=ISO
+r.get('/events', (req, res) => {
+  const since = req.query.since;
+  const evts = listEvents({ since });
+  res.json({ ok: true, data: { count: evts.length, items: evts } });
+});
+
+export default r;
+
+/README.md
+# observability-hub
+
+Aggregates events, counters, gauges, and persona snapshots from internal services. No external calls.
+
+## Env
+- AUTH_BEARER_TOKEN (default: `obs_token_123`)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Endpoints
+- GET  /api/v1/health               (public)
+- POST /api/v1/events               (auth)  — ingest event(s)
+- GET  /api/v1/metrics              (auth)  — read counters & gauges
+- POST /api/v1/metrics/counter      (auth)  — { key, delta }
+- POST /api/v1/metrics/gauge        (auth)  — { key, value }
+- GET  /api/v1/report               (auth)  — window + optional personaId
+- GET  /api/v1/report/events        (auth)  — recent events (optional ?since=ISO)
+
+## Auth
+`Authorization: Bearer obs_token_123` (or set your own secret)
+
+## Quick test (replace HOST with your replit URL)
+curl -s https://HOST/api/v1/health
+
+# ingest one event
+curl -s -X POST https://HOST/api/v1/events \
+ -H "Authorization: Bearer obs_token_123" -H "Content-Type: application/json" \
+ -d '{"type":"post_success","personaId":"p1","accountId":"a1","platform":"reddit"}'
+
+# bump a counter
+curl -s -X POST https://HOST/api/v1/metrics/counter \
+ -H "Authorization: Bearer obs_token_123" -H "Content-Type: application/json" \
+ -d '{"key":"posts.success","delta":1}'
+
+# set a gauge
+curl -s -X POST https://HOST/api/v1/metrics/gauge \
+ -H "Authorization: Bearer obs_token_123" -H "Content-Type: application/json" \
+ -d '{"key":"queue.depth","value":7}'
+
+# read metrics
+curl -s -H "Authorization: Bearer obs_token_123" https://HOST/api/v1/metrics
+
+# get a 24h report (global)
+curl -s -H "Authorization: Bearer obs_token_123" "https://HOST/api/v1/report?window=24h"
+
+# get a 7d report for a persona
+curl -s -H "Authorization: Bearer obs_token_123" "https://HOST/api/v1/report?window=7d&personaId=p1"

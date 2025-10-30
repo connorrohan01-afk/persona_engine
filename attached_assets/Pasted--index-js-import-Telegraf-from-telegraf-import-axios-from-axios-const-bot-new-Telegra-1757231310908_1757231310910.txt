@@ -1,0 +1,65 @@
+// index.js
+import { Telegraf } from 'telegraf';
+import axios from 'axios';
+
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+// Simple health checks
+bot.command('ping', (ctx) => ctx.reply('pong'));
+bot.command('status', (ctx) => ctx.reply('ok ✅'));
+bot.command('test', (ctx) => ctx.reply('it works'));
+
+// /build <name> <url> <every N units> (simple, tolerant parser)
+bot.command('build', async (ctx) => {
+  try {
+    const text = ctx.message.text || '';
+    const rest = text.replace(/^\/build\s*/i, '').trim();
+
+    if (!rest) {
+      return ctx.reply(
+        'Usage:\n/build <name> <url> every <N> <minutes|hours>\n' +
+        'Example:\n/build mybot https://httpbin.org/post every 1 hours'
+      );
+    }
+
+    // naive parse: "name url every N units"
+    const m = rest.match(/^(\S+)\s+(\S+)\s+every\s+(\d+)\s+(minutes?|hours?)$/i);
+    if (!m) {
+      return ctx.reply(
+        'Could not parse. Try:\n/build mybot https://httpbin.org/post every 1 hours'
+      );
+    }
+
+    const [, name, url, intervalStr, unitRaw] = m;
+    const interval = parseInt(intervalStr, 10);
+    const unit = unitRaw.toLowerCase().startsWith('hour') ? 'hours' : 'minutes';
+
+    // --- DO WORK HERE ---
+    // For now: mock a “build + activate”, later call your n8n or agent.
+    const workflowId = `wf_${Math.random().toString(36).slice(2, 10)}`;
+
+    // Example of where you’ll later plug n8n:
+    // await axios.post('https://<your-n8n>.app.n8n.cloud/rest/workflows', { ... });
+    // await axios.post(`https://<your-n8n>.app.n8n.cloud/rest/workflows/${id}/activate`, {}, { headers: { 'X-N8N-API-KEY': process.env.N8N_API_KEY } });
+
+    console.log('BUILD REQUEST', { chat_id: ctx.chat.id, name, url, interval, unit });
+    await ctx.reply(
+      `✅ Built & activated:\n` +
+      `• name: ${name}\n` +
+      `• url: ${url}\n` +
+      `• schedule: every ${interval} ${unit}\n` +
+      `• workflow_id: ${workflowId}`
+    );
+  } catch (err) {
+    console.error('BUILD ERROR', err?.response?.data || err.message);
+    await ctx.reply('❌ Build failed. Check logs.');
+  }
+});
+
+bot.launch().then(() => {
+  console.log('Bot up.');
+});
+
+// enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));

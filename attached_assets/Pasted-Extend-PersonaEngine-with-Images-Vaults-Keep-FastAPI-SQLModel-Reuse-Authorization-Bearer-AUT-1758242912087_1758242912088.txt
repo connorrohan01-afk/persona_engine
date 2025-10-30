@@ -1,0 +1,54 @@
+Extend PersonaEngine with Images + Vaults. Keep FastAPI + SQLModel. Reuse Authorization: Bearer <AUTH_BEARER_TOKEN>. Provide dry-run when keys missing or dry=1. Return stable JSON. Designed to plug into the Reddit poster (so image_url can be a signed/public URL we generate).
+
+Add files:
+	•	app/routes/images.py — image generation & ingest (by URL/file), returns public URLs.
+	•	app/routes/assets.py — signed URL issue/verify, public fetch.
+	•	app/routes/vault.py — minimal key/value vault (secrets + blobs metadata).
+	•	app/providers/images.py — provider wrappers (OpenAI/Replicate/Stability/mock).
+	•	app/storage.py — storage backend (S3/R2 or local disk) + signing.
+	•	app/models.py — add SQLModel tables for Asset, Secret, ImageJob.
+	•	app/config.py — add IMG/STORAGE envs.
+
+Environment:
+	•	STORAGE_BACKEND = s3 | local (default local)
+	•	PUBLIC_BASE_URL = e.g. https://content-maestro-connorrohan01.replit.app
+	•	If s3/r2: S3_BUCKET, S3_REGION, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
+	•	Image provider: IMG_PROVIDER=openai|replicate|stability|mock (default mock if no keys). OPENAI_API_KEY, REPLICATE_API_TOKEN, or STABILITY_API_KEY.
+	•	ASSET_SIGNING_SECRET (32 chars, fallback app secret).
+	•	MAX_IMAGE_MB=8. ALLOW_NSFV=false.
+
+Database models:
+	•	Asset(id, tenant_id, kind, sha256, mime, bytes, ext, path, public_url, signed_until, meta_json, created_at)
+	•	Secret(id, tenant_id, key, value_enc, created_at, updated_at) (encrypt with Fernet)
+	•	ImageJob(id, tenant_id, persona_id, prompt, style, width, height, provider, status, result_url, error, created_at)
+
+Storage (app/storage.py): implement put_bytes, get_bytes, exist. Path format /cdn/{tenant}/{yyyy}/{mm}/{sha16}.{ext}. For local: write under ./_public/cdn and mount FastAPI StaticFiles at /cdn. For S3: upload to bucket, return PUBLIC_BASE_URL/cdn path.
+
+Signing (app/routes/assets.py): HMAC SHA256 over path+expires with ASSET_SIGNING_SECRET. Endpoint POST /api/v1/assets/sign takes body { “tenant_id”:“owner”,“path”:”/cdn/owner/2025/09/abc.png”,“expires_in_seconds”:3600 } and returns { “ok”:true,“signed_url”:“https://…/cdn/owner/2025/09/abc.png?exp=1737…&sig=abcd” }. GET /cdn/… requires exp+sig and validates.
+
+Image provider (app/providers/images.py): generate_image(prompt,style,w,h,dry). If no key or dry=true, return placeholder PNG with “MOCK”. For OpenAI, Replicate, Stability: call provider, return bytes. Clamp w/h.
+
+Images API (app/routes/images.py):
+	•	POST /api/v1/images/generate → body { “tenant_id”:“owner”,“persona_id”:“per_123”,“prompt”:“cinematic portrait of a robot”,“style”:“photo”,“width”:768,“height”:1024,“nsfw”:false,“dry”:false } → validates, calls provider, stores Asset, responds { “ok”:true,“mode”:“live|mock”,“asset_id”:“ast_xxx”,“public_url”:“https://…/cdn/owner/2025/09/abcd.png”,“sha256”:“5a1f…”,“mime”:“image/png”,“bytes”:234567 }.
+	•	POST /api/v1/images/ingest → body { “tenant_id”:“owner”,“source_url”:“https://example.com/foo.jpg”,“expected_mime”:“image/jpeg” } → downloads, stores Asset, same response.
+	•	POST /api/v1/images/upload (multipart file + tenant_id) → stores, same response.
+	•	GET /api/v1/images/asset?id=ast_xxx → returns Asset meta.
+	•	POST /api/v1/images/sign → body { “tenant_id”:“owner”,“asset_id”:“ast_xxx”,“expires_in_seconds”:86400 } → returns { “ok”:true,“signed_url”:“https://…/cdn/…sig=…” }.
+
+Vault API (app/routes/vault.py):
+	•	POST /api/v1/vault/secret → body { “tenant_id”:“owner”,“key”:“OPENAI_API_KEY”,“value”:“sk-xxxx” } → stores encrypted, returns { “ok”:true }.
+	•	POST /api/v1/vault/secret/get → body { “tenant_id”:“owner”,“key”:“OPENAI_API_KEY” } → returns { “ok”:true,“key”:“OPENAI_API_KEY”,“value”:“sk-xxxx” }.
+	•	POST /api/v1/vault/blob → body { “tenant_id”:“owner”,“name”:“reddit_cookies.json”,“meta”:{“account_id”:“acc_123”},“asset_id”:“ast_xxx” } → returns { “ok”:true,“vault_blob_id”:“vbl_xxx” }.
+
+Safety: reject >MAX_IMAGE_MB, restrict mime to png/jpeg/webp/gif. If ALLOW_NSFV=false and prompt NSFW, return { “ok”:false,“error_code”:“nsfw_blocked”,“message”:“NSFW not allowed” }.
+
+Integration: Reddit poster can pass public_url as image_url.
+
+Telemetry: log every asset write with tenant_id, sha256, mode. Metrics: image.generated, image.ingested.
+
+Tests:
+	•	Generate with dry=1 → returns mock asset.
+	•	Ingest same image twice → same asset_id.
+	•	Signed URL expires → 403.
+
+Deliverable: working authenticated routes for image generation/ingest/upload, signed URLs, encrypted vault; assets under /cdn; dry-run produces consistent JSON with ok/mode/public_url so n8n Set nodes map easily.

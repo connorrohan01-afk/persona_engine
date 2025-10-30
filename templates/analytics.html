@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics - Content Automation Platform{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-chart-line me-2"></i>Analytics Dashboard
+        </h1>
+    </div>
+</div>
+
+<!-- Overview Stats -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card bg-primary">
+            <div class="card-body text-center">
+                <i class="fas fa-eye fa-2x mb-2"></i>
+                <h4>{{ "{:,}".format(total_views) }}</h4>
+                <p class="mb-0">Total Views</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-success">
+            <div class="card-body text-center">
+                <i class="fas fa-heart fa-2x mb-2"></i>
+                <h4>{{ "{:,}".format(total_likes) }}</h4>
+                <p class="mb-0">Total Likes</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-info">
+            <div class="card-body text-center">
+                <i class="fas fa-share fa-2x mb-2"></i>
+                <h4>{{ "{:,}".format(total_shares) }}</h4>
+                <p class="mb-0">Total Shares</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card bg-warning">
+            <div class="card-body text-center">
+                <i class="fas fa-comments fa-2x mb-2"></i>
+                <h4>{{ "{:,}".format(total_comments) }}</h4>
+                <p class="mb-0">Total Comments</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Performance Chart -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-area me-2"></i>Performance Over Time
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="performanceChart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Platform Performance -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-pie me-2"></i>Platform Performance
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="platformChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Platform Statistics -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-table me-2"></i>Platform Statistics
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if platform_stats %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Platform</th>
+                                    <th>Total Views</th>
+                                    <th>Total Likes</th>
+                                    <th>Avg. Engagement Rate</th>
+                                    <th>Performance</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for stat in platform_stats %}
+                                <tr>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ stat.platform.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ "{:,}".format(stat.views or 0) }}</td>
+                                    <td>{{ "{:,}".format(stat.likes or 0) }}</td>
+                                    <td>{{ "%.2f"|format(stat.avg_engagement or 0) }}%</td>
+                                    <td>
+                                        <div class="progress" style="height: 20px;">
+                                            {% set engagement = stat.avg_engagement or 0 %}
+                                            {% set progress_color = 'success' if engagement > 5 else ('warning' if engagement > 2 else 'danger') %}
+                                            <div class="progress-bar bg-{{ progress_color }}" 
+                                                 style="width: {{ min(100, engagement * 10) }}%">
+                                                {{ "%.1f"|format(engagement) }}%
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-chart-bar fa-3x text-muted mb-3"></i>
+                        <h5>No analytics data yet</h5>
+                        <p class="text-muted">Publish some content to see analytics here!</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Posts Performance -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-list me-2"></i>Recent Posts Performance
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if recent_analytics %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Post Title</th>
+                                    <th>Platform</th>
+                                    <th>Views</th>
+                                    <th>Likes</th>
+                                    <th>Shares</th>
+                                    <th>Comments</th>
+                                    <th>Engagement Rate</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for analytics, content in recent_analytics %}
+                                <tr>
+                                    <td>{{ content.title }}</td>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ analytics.platform.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ "{:,}".format(analytics.views) }}</td>
+                                    <td>{{ "{:,}".format(analytics.likes) }}</td>
+                                    <td>{{ "{:,}".format(analytics.shares) }}</td>
+                                    <td>{{ "{:,}".format(analytics.comments) }}</td>
+                                    <td>
+                                        {% set engagement = analytics.engagement_rate %}
+                                        {% set color = 'success' if engagement > 5 else ('warning' if engagement > 2 else 'danger') %}
+                                        <span class="badge bg-{{ color }}">
+                                            {{ "%.2f"|format(engagement) }}%
+                                        </span>
+                                    </td>
+                                    <td>{{ analytics.recorded_at.strftime('%Y-%m-%d') }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-file-alt fa-3x text-muted mb-3"></i>
+                        <h5>No recent posts</h5>
+                        <p class="text-muted">Publish some content to see detailed analytics here!</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Load analytics data and create charts
+    loadAnalyticsData();
+    createPlatformChart();
+    
+    async function loadAnalyticsData() {
+        try {
+            const response = await fetch('/api/analytics-data');
+            const data = await response.json();
+            createPerformanceChart(data);
+        } catch (error) {
+            console.error('Error loading analytics data:', error);
+        }
+    }
+    
+    function createPerformanceChart(data) {
+        const ctx = document.getElementById('performanceChart').getContext('2d');
+        
+        const labels = data.map(item => new Date(item.date).toLocaleDateString());
+        const viewsData = data.map(item => item.views);
+        const likesData = data.map(item => item.likes);
+        const sharesData = data.map(item => item.shares);
+        
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Views',
+                        data: viewsData,
+                        borderColor: 'rgb(54, 162, 235)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        tension: 0.1
+                    },
+                    {
+                        label: 'Likes',
+                        data: likesData,
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        tension: 0.1
+                    },
+                    {
+                        label: 'Shares',
+                        data: sharesData,
+                        borderColor: 'rgb(255, 205, 86)',
+                        backgroundColor: 'rgba(255, 205, 86, 0.1)',
+                        tension: 0.1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: 'rgba(255, 255, 255, 0.8)'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: 'rgba(255, 255, 255, 0.8)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: 'rgba(255, 255, 255, 0.8)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    function createPlatformChart() {
+        const ctx = document.getElementById('platformChart').getContext('2d');
+        
+        // Get platform data from the template
+        const platformData = [
+            {% for stat in platform_stats %}
+            {
+                platform: '{{ stat.platform.title() }}',
+                views: {{ stat.views or 0 }},
+                engagement: {{ stat.avg_engagement or 0 }}
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        ];
+        
+        if (platformData.length === 0) {
+            // Show empty state
+            ctx.canvas.parentElement.innerHTML = `
+                <div class="text-center py-4">
+                    <i class="fas fa-chart-pie fa-3x text-muted mb-3"></i>
+                    <p class="text-muted">No platform data available</p>
+                </div>
+            `;
+            return;
+        }
+        
+        const labels = platformData.map(item => item.platform);
+        const views = platformData.map(item => item.views);
+        
+        new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: views,
+                    backgroundColor: [
+                        'rgb(255, 99, 132)',
+                        'rgb(54, 162, 235)',
+                        'rgb(255, 205, 86)',
+                        'rgb(75, 192, 192)',
+                        'rgb(153, 102, 255)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: 'rgba(255, 255, 255, 0.8)',
+                            padding: 20
+                        }
+                    }
+                }
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,251 @@
+You are my Replit build engineer. Create a tiny repository named "n8n-glue-templates" that contains ready-to-import JSON snippets and a README to wire n8n with my Replit services. DO NOT include any third-party automation—only first-party HTTP calls to my services. Provide these files with full contents:
+
+FILES
+- README.md
+- templates/telegram_build_status_get.json        (HTTP Request node → GET ${N8N_HOST}/api/v1/workflows with X-N8N-API-KEY)
+- templates/replit_build_webhook.json             (HTTP Request node → POST ${ROUTER_URL}/api/v1/telegram/mock to simulate inbound commands)
+- templates/tool_router_webhook.json              (Webhook node: POST /tool-router + Respond node JSON)
+- templates/account_intake_examples.json          (3 HTTP nodes: create proxy, create vault, create intake account; all with Authorization: Bearer {{ $env.INTAKE_TOKEN }})
+- templates/post_queue_example.json               (HTTP node: POST ${POSTER_URL}/api/v1/queue with {accountId, subreddit, text})
+- templates/scheduler_job_example.json            (HTTP node: POST ${SCHEDULER_URL}/api/v1/jobs with cron/everyX)
+- templates/vault_put_get_example.json            (HTTP nodes: PUT/GET ${VAULTS_URL}/api/v1/blobs/{id})
+- .env.sample
+
+README.md (content requirements)
+- Brief: These JSON node exports can be pasted into n8n (Add node → JSON → Paste). Replace ${VAR}s or set them as env variables in n8n.
+- Required env in n8n:
+  - N8N_HOST, N8N_API_TOKEN
+  - ROUTER_URL
+  - INTAKE_URL, INTAKE_TOKEN
+  - POSTER_URL, POSTER_TOKEN
+  - SCHEDULER_URL, SCHEDULER_TOKEN
+  - VAULTS_URL, VAULTS_TOKEN
+- Step-by-step mini examples:
+  1) Ping status: import telegram_build_status_get.json, set keys, Execute → should return workflows array.
+  2) Create intake account: import account_intake_examples.json, set Bearer token, run nodes in order.
+  3) Queue a post: import post_queue_example.json, set accountId/subreddit/text, Execute → 200 with queue id.
+  4) Schedule: import scheduler_job_example.json, set “every 30 minutes”, Execute → returns job id.
+  5) Vault: put then get blob, verify content.
+
+templates (exact JSON shapes, use string placeholders so users can search/replace):
+
+templates/telegram_build_status_get.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${N8N_HOST}/api/v1/workflows",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-API-KEY", "value": "=${N8N_API_TOKEN}" }
+          ]
+        }
+      },
+      "id": "status-get",
+      "name": "n8n API: Workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}
+
+templates/replit_build_webhook.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${ROUTER_URL}/api/v1/telegram/webhook",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"message\": { \"chat\": { \"id\": 12345 }, \"text\": \"/ping\" } }",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "router-mock",
+      "name": "Router Mock /ping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}
+
+templates/tool_router_webhook.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tool-router",
+        "responseMode": "responseNode"
+      },
+      "id": "tool-webhook",
+      "name": "Webhook (Tool Router)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [ 200, 200 ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, echo: $json } }}"
+      },
+      "id": "tool-respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [ 420, 200 ]
+    }
+  ],
+  "connections": {
+    "Webhook (Tool Router)": { "main": [ [ { "node": "Respond OK", "type": "main", "index": 0 } ] ] }
+  }
+}
+
+templates/account_intake_examples.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/proxies",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"pA\", \"url\":\"http://user:pass@host:10000\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-proxy",
+      "name": "Intake: Create Proxy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 120 ]
+    },
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/vaults",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"sess-blob\", \"blob\":\"cookie=abc; token=xyz\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-vault",
+      "name": "Intake: Create Vault",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 220 ]
+    },
+    {
+      "parameters": {
+        "url": "=${INTAKE_URL}/api/v1/accounts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"platform\":\"reddit\", \"username\":\"u_demo\", \"notes\":\"manual onboarded\", \"proxyId\":\"={{$json.data.id}}\", \"vaultId\":\"={{$json.data.id}}\", \"session\": { \"cookies\":\"cookie=abc\", \"token\":\"xyz\" }, \"meta\": { \"owner\":\"me\" } }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${INTAKE_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "intake-account",
+      "name": "Intake: Create Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 320 ]
+    }
+  ],
+  "connections": {}
+}
+
+templates/post_queue_example.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${POSTER_URL}/api/v1/queue",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"accountId\":\"acc_123\", \"subreddit\":\"r/pics\", \"text\":\"hello world\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${POSTER_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "post-queue",
+      "name": "Poster: Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}
+
+templates/scheduler_job_example.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${SCHEDULER_URL}/api/v1/jobs",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"accountId\":\"acc_123\", \"every\": { \"value\":30, \"unit\":\"minutes\" }, \"task\": { \"type\":\"post\", \"subreddit\":\"r/pics\", \"text\":\"hi from schedule\" } }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${SCHEDULER_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "sched-job",
+      "name": "Scheduler: Create Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}
+
+templates/vault_put_get_example.json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${VAULTS_URL}/api/v1/blobs",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"label\":\"img-1\", \"blob\":\"base64:...\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${VAULTS_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "vault-put",
+      "name": "Vault: Put",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 160 ]
+    },
+    {
+      "parameters": {
+        "url": "=${VAULTS_URL}/api/v1/blobs/{{ $json.data.id }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${VAULTS_TOKEN}" } ] }
+      },
+      "id": "vault-get",
+      "name": "Vault: Get",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 420, 160 ]
+    }
+  ],
+  "connections": { "Vault: Put": { "main": [ [ { "node":"Vault: Get", "type":"main", "index": 0 } ] ] } }
+}
+
+.env.sample
+N8N_HOST=https://your-n8n-host
+N8N_API_TOKEN=replace-me
+ROUTER_URL=https://your-router.replit.app
+INTAKE_URL=https://your-intake.replit.app
+INTAKE_TOKEN=intake_token_123
+POSTER_URL=https://your-poster.replit.app
+POSTER_TOKEN=poster_token_123
+SCHEDULER_URL=https://your-scheduler.replit.app
+SCHEDULER_TOKEN=scheduler_token_123
+VAULTS_URL=https://your-vaults.replit.app
+VAULTS_TOKEN=vaults_token_123

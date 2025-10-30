@@ -1,0 +1,63 @@
+# --- n8n proxy: FastAPI -> Express (localhost:3000) --------------------------
+from fastapi import FastAPI, Request, Response, HTTPException
+import httpx
+
+app: FastAPI  # assume you already created it above
+
+N8N_INTERNAL_BASE = "http://localhost:3000/api/v1/n8n"
+
+# Pass through only safe headers (keep Authorization for our Bearer check)
+FORWARD_HEADERS = {"authorization", "content-type", "accept"}
+
+async def _proxy(request: Request, target_path: str, method: str = "GET"):
+    # Body & query
+    raw_body = await request.body()
+    params = dict(request.query_params)
+
+    # Headers (lowercased keys)
+    headers = {k.lower(): v for k, v in request.headers.items() if k.lower() in FORWARD_HEADERS}
+
+    url = f"{N8N_INTERNAL_BASE}/{target_path}"
+
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            content=raw_body if method in ("POST", "PUT", "PATCH") else None,
+            params=params if params else None,
+        )
+
+    # Bubble up errors but preserve body
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers={"content-type": resp.headers.get("content-type", "application/json")},
+    )
+
+# ----- Public routes (no :3000 needed) -----
+@app.post("/api/v1/n8n/create")
+async def n8n_create(request: Request):
+    return await _proxy(request, "create", "POST")
+
+# Activate (body: {"id":"..."} )
+@app.post("/api/v1/n8n/activate")
+async def n8n_activate_body(request: Request):
+    return await _proxy(request, "activate", "POST")
+
+# Activate (path: /activate/:id)
+@app.post("/api/v1/n8n/activate/{wf_id}")
+async def n8n_activate_path(request: Request, wf_id: str):
+    return await _proxy(request, f"activate/{wf_id}", "POST")
+
+# Get (query: ?id=...)
+@app.get("/api/v1/n8n/get")
+async def n8n_get_query(request: Request):
+    return await _proxy(request, "get", "GET")
+
+# Get (path: /get/:id)
+@app.get("/api/v1/n8n/get/{wf_id}")
+async def n8n_get_path(request: Request, wf_id: str):
+    return await _proxy(request, f"get/{wf_id}", "GET")
+# ---------------------------------------------------------------------------

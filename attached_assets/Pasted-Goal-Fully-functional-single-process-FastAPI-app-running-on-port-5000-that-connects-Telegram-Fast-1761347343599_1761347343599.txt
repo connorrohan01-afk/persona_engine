@@ -1,0 +1,89 @@
+Goal: Fully functional single-process FastAPI app running on port 5000 that connects Telegram → FastAPI → in-memory queue → Claude (Anthropic SDK) → Replit file system. All /build commands perform real file reads and writes, not simulated replies.
+
+Do this exactly:
+
+1. Install and import these deps:
+   - fastapi
+   - uvicorn
+   - httpx
+   - anthropic
+   - queue
+   - threading
+   (no python-telegram-bot)
+
+2. Project layout:
+   app/server.py
+   sdk/runner.py
+   utils/files.py
+   tools/reset_webhook.py
+
+3. Environment vars:
+   TELEGRAM_BOT_TOKEN
+   CHAT_ID_DEFAULT
+   ANTHROPIC_API_KEY
+
+4. app/server.py:
+   - Create FastAPI app
+   - Global TASK_QUEUE = queue.Queue()
+   - On startup, spawn a background worker thread that continuously pulls from TASK_QUEUE.
+   - Routes:
+     • GET /api/v1/health → {ok:true, queue_depth:int}
+     • POST /api/v1/telegram/{token}
+        → validate token == TELEGRAM_BOT_TOKEN
+        → parse message.text
+        → commands:
+            /ping → send "✅ Direct test pong"
+            /status → send "📊 System OK | Queue: {n}"
+            /build read <path> → read file + SHA1 + first 1200 chars
+            /build patch <path> → next message = goal text; enqueue job {path,goal}
+   - Worker thread: when job.type=="patch" → call sdk.runner.patch_file(path,goal), then send reply:
+        ✅ Patch Applied
+        File: <path>
+        Lines changed: <n>
+        SHA1: <hash_after>
+
+5. utils/files.py:
+   - read_text(path)
+   - write_text(path,text)
+   - sha1(path)
+   - git_diff(path,max_lines=120)
+
+6. sdk/runner.py:
+   - def patch_file(path, goal):
+        read original file
+        call Anthropic claude-3-5-sonnet-20241022:
+           “You are a code editor. Return ONLY the full new file content.
+            File: {path}
+            Goal: {goal}
+            Original:
+            '''{original}'''”
+        write new content
+        compute lines changed + new sha1
+        return {ok:true, lines_changed:n, sha1:hash}
+
+7. tools/reset_webhook.py:
+   - Detect public URL (REPLIT_PUBLIC_URL or user input)
+   - Set Telegram webhook to https://<PUBLIC_URL>/api/v1/telegram/${TELEGRAM_BOT_TOKEN}
+   - Print getWebhookInfo result
+
+8. Telegram send helper:
+   - POST to https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage
+     with {"chat_id":CHAT_ID_DEFAULT,"text":message}
+
+9. Startup:
+   - Print “Worker running”
+   - Run uvicorn on 0.0.0.0:5000
+
+After completion:
+- Restart Replit (Run)
+- Run `python tools/reset_webhook.py`
+- Test from Telegram:
+   /ping
+   /status
+   /build read test_sample.py
+   /build patch test_canary.txt
+   (next message)
+   CANARY: prove write works
+   /build read test_canary.txt
+
+If these succeed and show SHA1 + file content changes, the system is fully functional.

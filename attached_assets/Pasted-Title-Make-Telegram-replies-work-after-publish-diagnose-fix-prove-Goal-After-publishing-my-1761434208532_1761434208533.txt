@@ -1,0 +1,62 @@
+Title: Make Telegram replies work after publish (diagnose + fix + prove)
+
+Goal: After publishing, my Telegram bot replies reliably to /ping and /build read <path>.
+We’ve seen it work once, then break after republish. Find the root cause and fix it.
+
+IMPORTANT RULES
+- Do not print or echo full secret values; show only key names and the first/last 3 chars.
+- Prefer the deployed app (public URL) for all tests, not localhost.
+- If something fails, show the exact evidence (HTTP code, small log snippets), then fix and retest.
+
+Do exactly, step by step:
+
+STEP 1 — Quick health + route sanity
+1. Read env in workspace: TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT, PUBLIC_URL, ANTHROPIC_API_KEY (mask values).
+2. GET ${PUBLIC_URL}/api/v1/health. Expect {"ok":true}.
+3. If not 200/ok:
+   - Open deployment config and verify Run command is exactly:
+     python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+   - Verify requirements are installed on deploy.
+   - Redeploy and recheck health until OK.
+
+STEP 2 — Deployment secrets vs workspace secrets
+1. Open the **Deployment** (publishing) settings → Environment variables.
+2. Ensure these keys exist and are **non-empty**: TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT, ANTHROPIC_API_KEY, PUBLIC_URL.
+3. If any missing/wrong, create/update them to match workspace values (do not print full values).
+4. Redeploy if anything changed.
+
+STEP 3 — Webhook correctness
+1. Run: python tools/reset_webhook.py (it must succeed and show the exact url).
+2. Call Telegram: curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
+   - Verify url == ${PUBLIC_URL}/api/v1/telegram/${TELEGRAM_BOT_TOKEN}
+   - last_error_message is null, pending_update_count small (0–1)
+
+STEP 4 — End-to-end tests (public, not local)
+1. Simulate webhook POST:
+   POST ${PUBLIC_URL}/api/v1/telegram/${TELEGRAM_BOT_TOKEN}
+   Body: {"message":{"chat":{"id":${CHAT_ID_DEFAULT}},"text":"/ping"}}
+   Expect 200 and server logs containing “Handled /ping” or similar.
+2. Send a real Telegram message: /ping in the chat.
+   - Tail deployment logs for 30s; capture lines showing inbound webhook, command parsed, and sendMessage success.
+3. Test read:
+   Send: /build read test_sample.py
+   Expect a Telegram reply with first part of file and “SHA1: ”.
+
+STEP 5 — If still failing, locate the exact break point, then fix
+- If webhook 403/404 → path/token mismatch; confirm route is POST /api/v1/telegram/{token} and token matches ENV. Fix and redeploy.
+- If webhook 200 but no Telegram message → likely outbound sendMessage; check TELEGRAM_BOT_TOKEN/CHAT_ID_DEFAULT in deployment; test with:
+  python - <<'PY'
+import os,requests; t=os.getenv("TELEGRAM_BOT_TOKEN"); c=os.getenv("CHAT_ID_DEFAULT");
+print(requests.post(f"https://api.telegram.org/bot{t}/sendMessage", json={"chat_id": int(c), "text":"Outbound test ✅"}).status_code)
+PY
+  If this fails, fix secrets in deployment and re-run.
+- If health OK but webhook times out → ensure PUBLIC_URL has no trailing slash, app is binding 0.0.0.0:$PORT, and no auth middleware blocks the route.
+
+STEP 6 — Deliverables (print compact summary)
+- Public health: HTTP status + body
+- WebhookInfo url + status (masked token)
+- Deployment secrets present? (yes/no per key)
+- Last 30 lines of deployment logs after /ping
+- Final verdict: ✅ Working (public) or ❌ Not yet (with the exact failing step)
+
+Finish only when /ping and /build read test_sample.py both respond in Telegram chat.

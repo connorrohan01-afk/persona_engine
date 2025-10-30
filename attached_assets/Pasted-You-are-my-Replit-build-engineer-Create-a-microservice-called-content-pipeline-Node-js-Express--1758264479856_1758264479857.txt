@@ -1,0 +1,444 @@
+You are my Replit build engineer. Create a microservice called content-pipeline (Node.js + Express) that manages content templates, persona prompts, post plans, and simulated renders (string interpolation only). This service MUST NOT call any external sites or social APIs. It only stores template metadata, variables, and returns previewed content so other services (scheduler, posting stub) can consume it.
+
+Requirements:
+	•	Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid.
+	•	Structure: server.js, src/lib/{auth,validators,store,render}.js, src/routes/{templates,personas,plans,render}.js, README.md, package.json.
+	•	Auth: Bearer header via AUTH_BEARER_TOKEN (default: pipeline_token_123).
+	•	Storage: in-memory maps:
+• templates: { id, name, body, variables[], createdAt, updatedAt }
+• personas: { id, name, voice, tone, rules?, createdAt, updatedAt }
+• plans: { id, accountId, templateId, personaId?, variables:{}, createdAt, updatedAt }
+• history: { id, planId, output, createdAt } (append-only for rendered previews)
+	•	Endpoints under /api/v1; include /health and print AVAILABLE_ROUTES at boot.
+	•	Rate limit: 200 req / 5 min. JSON envelope: { ok:true|false, data?, error? }.
+	•	Rendering: ONLY local safe interpolation: replace {{var}} tokens; apply persona voice/tone with a simple prefix/suffix; no network calls, no AI calls. Provide a /render/preview endpoint to preview a plan or raw template+vars+persona.
+
+Files to create (full contents):
+
+package.json
+{
+“name”: “content-pipeline”,
+“private”: true,
+“type”: “module”,
+“scripts”: {
+“dev”: “node server.js”
+},
+“dependencies”: {
+“express”: “^4.19.2”,
+“helmet”: “^7.0.0”,
+“morgan”: “^1.10.0”,
+“express-rate-limit”: “^7.2.0”,
+“zod”: “^3.23.8”,
+“nanoid”: “^5.0.7”
+}
+}
+
+server.js
+import express from ‘express’;
+import helmet from ‘helmet’;
+import morgan from ‘morgan’;
+import rateLimit from ‘express-rate-limit’;
+import { bearerAuth } from ‘./src/lib/auth.js’;
+import templatesRouter from ‘./src/routes/templates.js’;
+import personasRouter from ‘./src/routes/personas.js’;
+import plansRouter from ‘./src/routes/plans.js’;
+import renderRouter from ‘./src/routes/render.js’;
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan(‘tiny’));
+app.use(express.json({ limit: ‘1mb’ }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 200, standardHeaders: true });
+app.use(limiter);
+
+// Health (no auth)
+app.get(’/api/v1/health’, (req, res) => {
+res.json({ ok: true, data: { service: ‘content-pipeline’, status: ‘healthy’ } });
+});
+
+// Protected routes
+app.use(’/api/v1/templates’, bearerAuth, templatesRouter);
+app.use(’/api/v1/personas’, bearerAuth, personasRouter);
+app.use(’/api/v1/plans’, bearerAuth, plansRouter);
+app.use(’/api/v1/render’, bearerAuth, renderRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: ‘not_found’ } }));
+
+function printRoutes() {
+const routes = [];
+const push = (m, p) => {
+const methods = Object.keys(m.route.methods).map(x => x.toUpperCase()).join(’,’);
+routes.push(${methods.padEnd(6)} ${p}${m.route.path});
+};
+app._router.stack.forEach((layer) => {
+if (layer.route?.path) {
+const methods = Object.keys(layer.route.methods).map(x => x.toUpperCase()).join(’,’);
+routes.push(${methods.padEnd(6)} ${layer.route.path});
+} else if (layer.name === ‘router’ && layer.handle.stack) {
+const base = layer.regexp?.toString().match(/^/^\(.*?)\//)?.[1]?.replace(/\//g,’/’) || ‘’;
+layer.handle.stack.forEach(h => h.route && push(h, /${base}));
+}
+});
+console.log(‘AVAILABLE_ROUTES’);
+routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+console.log(content-pipeline listening on :${PORT});
+printRoutes();
+console.log(‘READY’);
+});
+
+export default app;
+
+src/lib/auth.js
+export function bearerAuth(req, res, next) {
+const header = req.headers[‘authorization’] || ‘’;
+const token = header.startsWith(’Bearer ’) ? header.slice(7) : null;
+const allow = process.env.AUTH_BEARER_TOKEN || ‘pipeline_token_123’;
+if (!token || token !== allow) {
+return res.status(401).json({ ok: false, error: { message: ‘unauthorized’ } });
+}
+req.user = { ok: true, sandbox: true };
+next();
+}
+
+src/lib/validators.js
+import { z } from ‘zod’;
+
+export const TemplateCreateSchema = z.object({
+name: z.string().min(1),
+body: z.string().min(1),
+variables: z.array(z.string()).default([])
+});
+export const TemplatePatchSchema = z.object({
+name: z.string().optional(),
+body: z.string().optional(),
+variables: z.array(z.string()).optional()
+});
+
+export const PersonaCreateSchema = z.object({
+name: z.string().min(1),
+voice: z.string().default(‘neutral’),
+tone: z.string().default(‘informative’),
+rules: z.array(z.string()).optional()
+});
+export const PersonaPatchSchema = z.object({
+name: z.string().optional(),
+voice: z.string().optional(),
+tone: z.string().optional(),
+rules: z.array(z.string()).optional()
+});
+
+export const PlanCreateSchema = z.object({
+accountId: z.string().min(1),
+templateId: z.string().min(1),
+personaId: z.string().optional(),
+variables: z.record(z.any()).default({})
+});
+export const PlanPatchSchema = z.object({
+templateId: z.string().optional(),
+personaId: z.string().optional(),
+variables: z.record(z.any()).optional()
+});
+
+export const PreviewSchema = z.object({
+// Either planId OR (template/body + variables) is required
+planId: z.string().optional(),
+templateId: z.string().optional(),
+body: z.string().optional(),
+variables: z.record(z.any()).default({}),
+personaId: z.string().optional(),
+personaName: z.string().optional(),
+voice: z.string().optional(),
+tone: z.string().optional()
+});
+
+export function parse(schema, body) {
+const r = schema.safeParse(body);
+if (!r.success) {
+return { ok: false, error: r.error.flatten() };
+}
+return { ok: true, data: r.data };
+}
+
+src/lib/store.js
+import { nanoid } from ‘nanoid’;
+
+const templates = new Map();
+const personas = new Map();
+const plans = new Map();
+const history = new Map(); // id -> { id, planId?, output, createdAt }
+
+export const db = { templates, personas, plans, history };
+
+export function createOne(map, obj) {
+const id = nanoid();
+const now = new Date().toISOString();
+const rec = { id, createdAt: now, updatedAt: now, …obj };
+map.set(id, rec);
+return rec;
+}
+export function patchOne(map, id, patch) {
+const cur = map.get(id);
+if (!cur) return null;
+const rec = { …cur, …patch, updatedAt: new Date().toISOString() };
+map.set(id, rec);
+return rec;
+}
+export function getOne(map, id) { return map.get(id) || null; }
+export function deleteOne(map, id) { return map.delete(id); }
+export function listMap(map, { offset=0, limit=50 }={}) {
+const all = Array.from(map.values());
+return { total: all.length, items: all.slice(offset, offset+limit) };
+}
+
+export function appendHistory(payload) {
+return createOne(history, payload);
+}
+
+src/lib/render.js
+// Extremely simple, safe string interpolation and persona wrapping.
+export function interpolate(body, variables = {}) {
+if (typeof body !== ‘string’) return ‘’;
+return body.replace(/{{\s*([a-zA-Z0-9_.]+)\s*}}/g, (_m, key) => {
+const val = key.split(’.’).reduce((acc, k) => (acc && acc[k] != null ? acc[k] : undefined), variables);
+return (val === undefined || val === null) ? ‘’ : String(val);
+});
+}
+
+export function applyPersona(text, persona) {
+if (!persona) return text;
+const v = persona.voice ? [voice:${persona.voice}] : ‘’;
+const t = persona.tone ? [tone:${persona.tone}] : ‘’;
+const rules = persona.rules && persona.rules.length ? \n[rules:${persona.rules.join(' | ')}] : ‘’;
+return ${v}${t}${rules}\n${text};
+}
+
+src/routes/templates.js
+import { Router } from ‘express’;
+import { parse, TemplateCreateSchema, TemplatePatchSchema } from ‘../lib/validators.js’;
+import { db, createOne, listMap, getOne, patchOne, deleteOne } from ‘../lib/store.js’;
+
+const r = Router();
+
+r.post(’/’, (req, res) => {
+const v = parse(TemplateCreateSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = createOne(db.templates, v.data);
+res.json({ ok:true, data: rec });
+});
+
+r.get(’/’, (req, res) => {
+const offset = Number(req.query.offset || 0) || 0;
+const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+res.json({ ok:true, data: listMap(db.templates, { offset, limit }) });
+});
+
+r.get(’/:id’, (req, res) => {
+const rec = getOne(db.templates, req.params.id);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.patch(’/:id’, (req, res) => {
+const v = parse(TemplatePatchSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = patchOne(db.templates, req.params.id, v.data);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.delete(’/:id’, (req, res) => {
+const ok = deleteOne(db.templates, req.params.id);
+if (!ok) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: { id: req.params.id, deleted: true }});
+});
+
+export default r;
+
+src/routes/personas.js
+import { Router } from ‘express’;
+import { parse, PersonaCreateSchema, PersonaPatchSchema } from ‘../lib/validators.js’;
+import { db, createOne, listMap, getOne, patchOne, deleteOne } from ‘../lib/store.js’;
+
+const r = Router();
+
+r.post(’/’, (req, res) => {
+const v = parse(PersonaCreateSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = createOne(db.personas, v.data);
+res.json({ ok:true, data: rec });
+});
+
+r.get(’/’, (req, res) => {
+const offset = Number(req.query.offset || 0) || 0;
+const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+res.json({ ok:true, data: listMap(db.personas, { offset, limit }) });
+});
+
+r.get(’/:id’, (req, res) => {
+const rec = getOne(db.personas, req.params.id);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.patch(’/:id’, (req, res) => {
+const v = parse(PersonaPatchSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = patchOne(db.personas, req.params.id, v.data);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.delete(’/:id’, (req, res) => {
+const ok = deleteOne(db.personas, req.params.id);
+if (!ok) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: { id: req.params.id, deleted: true }});
+});
+
+export default r;
+
+src/routes/plans.js
+import { Router } from ‘express’;
+import { parse, PlanCreateSchema, PlanPatchSchema } from ‘../lib/validators.js’;
+import { db, createOne, listMap, getOne, patchOne, deleteOne } from ‘../lib/store.js’;
+
+const r = Router();
+
+r.post(’/’, (req, res) => {
+const v = parse(PlanCreateSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = createOne(db.plans, v.data);
+res.json({ ok:true, data: rec });
+});
+
+r.get(’/’, (req, res) => {
+const offset = Number(req.query.offset || 0) || 0;
+const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+res.json({ ok:true, data: listMap(db.plans, { offset, limit }) });
+});
+
+r.get(’/:id’, (req, res) => {
+const rec = getOne(db.plans, req.params.id);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.patch(’/:id’, (req, res) => {
+const v = parse(PlanPatchSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+const rec = patchOne(db.plans, req.params.id, v.data);
+if (!rec) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: rec });
+});
+
+r.delete(’/:id’, (req, res) => {
+const ok = deleteOne(db.plans, req.params.id);
+if (!ok) return res.status(404).json({ ok:false, error:{ message:‘not_found’ }});
+res.json({ ok:true, data: { id: req.params.id, deleted: true }});
+});
+
+export default r;
+
+src/routes/render.js
+import { Router } from ‘express’;
+import { parse, PreviewSchema } from ‘../lib/validators.js’;
+import { db, getOne, appendHistory } from ‘../lib/store.js’;
+import { interpolate, applyPersona } from ‘../lib/render.js’;
+
+const r = Router();
+
+// POST /render/preview — preview by planId OR raw template/body + variables
+r.post(’/preview’, (req, res) => {
+const v = parse(PreviewSchema, req.body || {});
+if (!v.ok) return res.status(400).json({ ok:false, error: v.error });
+
+let body = v.data.body;
+let variables = v.data.variables || {};
+let persona = null;
+
+if (!body && v.data.planId) {
+const plan = getOne(db.plans, v.data.planId);
+if (!plan) return res.status(404).json({ ok:false, error:{ message:‘plan_not_found’ }});
+const tmpl = getOne(db.templates, plan.templateId);
+if (!tmpl) return res.status(404).json({ ok:false, error:{ message:‘template_not_found’ }});
+body = tmpl.body;
+variables = { …(plan.variables || {}) };
+if (plan.personaId) persona = getOne(db.personas, plan.personaId);
+} else if (!body && v.data.templateId) {
+const tmpl = getOne(db.templates, v.data.templateId);
+if (!tmpl) return res.status(404).json({ ok:false, error:{ message:‘template_not_found’ }});
+body = tmpl.body;
+}
+
+// Allow explicit persona override fields
+if (!persona && (v.data.personaId || v.data.personaName || v.data.voice || v.data.tone)) {
+persona = {
+id: v.data.personaId || ‘override’,
+name: v.data.personaName || ‘override’,
+voice: v.data.voice || ‘neutral’,
+tone: v.data.tone || ‘informative’
+};
+}
+
+const output = applyPersona(interpolate(body || ‘’, variables), persona);
+const rec = appendHistory({ planId: v.data.planId || null, output, createdAt: new Date().toISOString() });
+
+res.json({ ok:true, data: { previewId: rec.id, output }});
+});
+
+export default r;
+
+README.md
+
+content-pipeline
+
+Templates + personas + plans + safe, local interpolation preview. No external calls.
+
+Env
+	•	AUTH_BEARER_TOKEN (default: pipeline_token_123)
+	•	PORT=3000
+
+Run
+
+npm run dev
+
+Health (no auth)
+
+curl -s https://.replit.app/api/v1/health
+
+Auth header
+
+Authorization: Bearer pipeline_token_123
+
+Quick flow
+
+Create a template:
+curl -s -X POST https://.replit.app/api/v1/templates 
+-H “Authorization: Bearer pipeline_token_123” -H “Content-Type: application/json” 
+-d ‘{“name”:“promo”,“body”:“Top {{subreddit}} picks: {{title}}”,“variables”:[“subreddit”,“title”]}’
+
+Create a persona:
+curl -s -X POST https://.replit.app/api/v1/personas 
+-H “Authorization: Bearer pipeline_token_123” -H “Content-Type: application/json” 
+-d ‘{“name”:“Crisp”,“voice”:“concise”,“tone”:“helpful”,“rules”:[“no emojis”]}’
+
+Create a plan:
+curl -s -X POST https://.replit.app/api/v1/plans 
+-H “Authorization: Bearer pipeline_token_123” -H “Content-Type: application/json” 
+-d ‘{“accountId”:“acct_1”,“templateId”:”<TEMPLATE_ID>”,“personaId”:”<PERSONA_ID>”,“variables”:{“subreddit”:“pics”,“title”:“Sunset”}}’
+
+Preview (by planId):
+curl -s -X POST https://.replit.app/api/v1/render/preview 
+-H “Authorization: Bearer pipeline_token_123” -H “Content-Type: application/json” 
+-d ‘{“planId”:”<PLAN_ID>”}’
+
+Preview (raw):
+curl -s -X POST https://.replit.app/api/v1/render/preview 
+-H “Authorization: Bearer pipeline_token_123” -H “Content-Type: application/json” 
+-d ‘{“body”:“Hello {{name}}”,“variables”:{“name”:“world”},“voice”:“friendly”,“tone”:“casual”}’

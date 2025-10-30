@@ -1,0 +1,450 @@
+You are my Replit build engineer. Create a microservice named content-scheduler (Node.js + Express) that lets me define post schedules for personas and reliably fire webhooks with payloads on time. This service MUST NOT automate any third-party sites directly; it only schedules and delivers HTTP webhook calls that other internal services (or I) handle. Safe, local, auditable.
+
+REQUIREMENTS (must follow)
+• Tech: Node 18+, Express, helmet, morgan, express-rate-limit, zod, nanoid, node-cron, axios.
+• Structure: server.js, src/lib/{auth,validators,store,runner}.js, src/routes/{schedules,health}.js, README.md, package.json.
+• Auth: Bearer header via AUTH_BEARER_TOKEN (default fallback sched_token_123).
+• Storage: In-memory store for schedules and dispatch logs; ready to swap later.
+• Reliability:
+  – Use node-cron for cron strings OR an ISO start + everyX (minutes/hours) cadence.
+  – De-dupe firing per tick; mark success/failure with response code + duration.
+  – Exponential backoff retries (max 3) on non-2xx; jitter to avoid thundering herd.
+• Endpoints under /api/v1 with JSON envelope { ok, data?, error? }.
+• Rate limit: 300 req / 5 min default.
+• On boot: print AVAILABLE_ROUTES and “READY: content-scheduler”.
+• No external automation logic; only outbound webhooks to URLs I provide.
+
+FILES TO CREATE (full contents exactly below)
+
+package.json
+json
+{
+  "name": "content-scheduler",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.0.7",
+    "node-cron": "^3.0.3",
+    "zod": "^3.23.8"
+  }
+}
+
+server.js
+js
+import express from 'express';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { bearerAuth } from './src/lib/auth.js';
+import healthRouter from './src/routes/health.js';
+import schedulesRouter from './src/routes/schedules.js';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(helmet());
+app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
+
+const limiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 300, standardHeaders: true });
+app.use(limiter);
+
+// Public health
+app.use('/api/v1/health', healthRouter);
+
+// Protected routes
+app.use('/api/v1/schedules', bearerAuth, schedulesRouter);
+
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: { message: 'not_found' } }));
+
+function printRoutes() {
+  const routes = [];
+  const scan = (stack, base = '') => {
+    stack.forEach((layer) => {
+      if (layer.route) {
+        const m = Object.keys(layer.route.methods).map(x => x.toUpperCase()).join(',');
+        routes.push(`${m.padEnd(6)} ${base}${layer.route.path}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        const match = layer.regexp?.toString().match(/\\/(api[^\\]+)\\//);
+        const prefix = match ? `/${match[1]}/` : '/';
+        scan(layer.handle.stack, prefix.slice(0, -1));
+      }
+    });
+  };
+  scan(app._router.stack);
+  console.log('AVAILABLE_ROUTES');
+  routes.sort().forEach(r => console.log(r));
+}
+
+app.listen(PORT, () => {
+  console.log(`content-scheduler listening on :${PORT}`);
+  printRoutes();
+  console.log('READY: content-scheduler');
+});
+
+export default app;
+
+src/lib/auth.js
+js
+export function bearerAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const allow = process.env.AUTH_BEARER_TOKEN || 'sched_token_123';
+  if (!token || token !== allow) {
+    return res.status(401).json({ ok: false, error: { message: 'unauthorized' } });
+  }
+  req.user = { ok: true, service: 'content-scheduler' };
+  next();
+}
+
+src/lib/validators.js
+js
+import { z } from 'zod';
+
+export const CadenceCron = z.object({
+  kind: z.literal('cron'),
+  expr: z.string().min(1) // e.g. "*/30 * * * *"
+});
+
+export const CadenceEvery = z.object({
+  kind: z.literal('every'),
+  startAt: z.string().datetime().optional(), // ISO
+  unit: z.enum(['minutes','hours']),
+  value: z.number().int().positive()
+});
+
+export const ScheduleCreateSchema = z.object({
+  personaId: z.string().min(1),
+  channel: z.enum(['reddit','telegram','twitter','generic']).default('generic'),
+  webhookUrl: z.string().url(),
+  secret: z.string().optional(), // optional shared secret for target
+  payload: z.record(z.any()).default({}),
+  cadence: z.union([CadenceCron, CadenceEvery]),
+  enabled: z.boolean().default(true),
+  meta: z.record(z.any()).optional()
+});
+
+export const SchedulePatchSchema = z.object({
+  webhookUrl: z.string().url().optional(),
+  secret: z.string().optional(),
+  payload: z.record(z.any()).optional(),
+  cadence: z.union([CadenceCron, CadenceEvery]).optional(),
+  enabled: z.boolean().optional(),
+  meta: z.record(z.any()).optional()
+});
+
+export const QueryListSchema = z.object({
+  personaId: z.string().optional(),
+  enabled: z.string().optional(), // "true"|"false"
+  channel: z.string().optional()
+});
+
+export function parse(schema, body) {
+  const r = schema.safeParse(body);
+  if (!r.success) return { ok: false, error: r.error.flatten() };
+  return { ok: true, data: r.data };
+}
+
+src/lib/store.js
+js
+import { nanoid } from 'nanoid';
+
+const schedules = new Map(); // id -> schedule
+const logs = new Map();      // scheduleId -> [{id, ts, status, code, ms, attempt, note}]
+
+export function createSchedule(data) {
+  const id = nanoid();
+  const now = new Date().toISOString();
+  const rec = { id, createdAt: now, updatedAt: now, ...data };
+  schedules.set(id, rec);
+  return rec;
+}
+
+export function patchSchedule(id, patch) {
+  const cur = schedules.get(id);
+  if (!cur) return null;
+  const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+  schedules.set(id, updated);
+  return updated;
+}
+
+export function getSchedule(id) { return schedules.get(id) || null; }
+
+export function listSchedules(filter = {}) {
+  let arr = Array.from(schedules.values());
+  if (filter.personaId) arr = arr.filter(s => s.personaId === filter.personaId);
+  if (filter.channel) arr = arr.filter(s => s.channel === filter.channel);
+  if (filter.enabled !== undefined) {
+    const want = String(filter.enabled).toLowerCase() === 'true';
+    arr = arr.filter(s => s.enabled === want);
+  }
+  return arr;
+}
+
+export function deleteSchedule(id) { return schedules.delete(id); }
+
+export function pushLog(scheduleId, entry) {
+  const l = logs.get(scheduleId) || [];
+  l.unshift({ id: nanoid(), ts: new Date().toISOString(), ...entry });
+  logs.set(scheduleId, l.slice(0, 200)); // cap per schedule
+  return l[0];
+}
+
+export function getLogs(scheduleId, limit = 50) {
+  const l = logs.get(scheduleId) || [];
+  return l.slice(0, limit);
+}
+
+src/lib/runner.js
+js
+import cron from 'node-cron';
+import axios from 'axios';
+import { pushLog, listSchedules, getSchedule } from './store.js';
+
+const tasks = new Map(); // scheduleId -> cancel function
+
+function jitter(ms) {
+  const delta = Math.floor(Math.random() * Math.min(500, Math.max(50, ms * 0.1)));
+  return ms + delta;
+}
+
+async function fireOnce(schedule) {
+  const start = Date.now();
+  const headers = { 'Content-Type': 'application/json' };
+  if (schedule.secret) headers['X-Webhook-Secret'] = schedule.secret;
+
+  let attempt = 0;
+  let lastErr = null;
+
+  while (attempt < 3) {
+    attempt++;
+    try {
+      const res = await axios.post(schedule.webhookUrl, {
+        personaId: schedule.personaId,
+        channel: schedule.channel,
+        payload: schedule.payload,
+        scheduleId: schedule.id,
+        firedAt: new Date().toISOString(),
+        attempt
+      }, { headers, timeout: 10_000 });
+
+      pushLog(schedule.id, {
+        status: 'ok',
+        code: res.status,
+        ms: Date.now() - start,
+        attempt,
+        note: 'delivered'
+      });
+      return;
+    } catch (e) {
+      lastErr = e;
+      pushLog(schedule.id, {
+        status: 'fail',
+        code: e.response?.status || 0,
+        ms: Date.now() - start,
+        attempt,
+        note: e.message?.slice(0, 120) || 'error'
+      });
+      // backoff with jitter
+      const backoff = jitter(300 * attempt);
+      await new Promise(r => setTimeout(r, backoff));
+    }
+  }
+  // After retries
+  const code = lastErr?.response?.status || 0;
+  pushLog(schedule.id, { status: 'drop', code, ms: Date.now() - start, attempt: 3, note: 'exhausted retries' });
+}
+
+function startCron(schedule) {
+  // Stop any existing runner
+  stopCron(schedule.id);
+
+  if (!schedule.enabled) return;
+
+  if (schedule.cadence.kind === 'cron') {
+    const task = cron.schedule(schedule.cadence.expr, () => fireOnce(schedule), { timezone: 'UTC' });
+    tasks.set(schedule.id, () => task.stop());
+    return;
+  }
+
+  if (schedule.cadence.kind === 'every') {
+    const everyMs = schedule.cadence.unit === 'minutes'
+      ? schedule.cadence.value * 60_000
+      : schedule.cadence.value * 3_600_000;
+
+    const startAt = schedule.cadence.startAt ? new Date(schedule.cadence.startAt).getTime() : Date.now();
+    const now = Date.now();
+    const initialDelay = Math.max(0, startAt - now);
+
+    let timer = setTimeout(function kick() {
+      fireOnce(getSchedule(schedule.id) || schedule);
+      timer = setInterval(() => fireOnce(getSchedule(schedule.id) || schedule), everyMs);
+      tasks.set(schedule.id, () => { clearInterval(timer); });
+    }, initialDelay);
+
+    tasks.set(schedule.id, () => { clearTimeout(timer); clearInterval(timer); });
+    return;
+  }
+}
+
+export function refreshRunners() {
+  // restart all
+  for (const cancel of tasks.values()) try { cancel(); } catch {}
+  tasks.clear();
+  const all = listSchedules();
+  all.forEach(startCron);
+}
+
+export function startRunnerFor(schedule) {
+  startCron(schedule);
+}
+
+export function stopCron(id) {
+  const cancel = tasks.get(id);
+  if (cancel) { try { cancel(); } catch {} tasks.delete(id); }
+}
+
+src/routes/health.js
+js
+import { Router } from 'express';
+import { listSchedules } from '../lib/store.js';
+
+const r = Router();
+r.get('/', (_req, res) => {
+  res.json({ ok: true, data: { service: 'content-scheduler', status: 'healthy', schedules: listSchedules().length } });
+});
+export default r;
+
+src/routes/schedules.js
+js
+import { Router } from 'express';
+import { parse, ScheduleCreateSchema, SchedulePatchSchema, QueryListSchema } from '../lib/validators.js';
+import { createSchedule, patchSchedule, getSchedule, listSchedules, deleteSchedule, getLogs } from '../lib/store.js';
+import { startRunnerFor, stopCron, refreshRunners } from '../lib/runner.js';
+
+const r = Router();
+
+// Create
+r.post('/', (req, res) => {
+  const v = parse(ScheduleCreateSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  const created = createSchedule(v.data);
+  startRunnerFor(created);
+  res.json({ ok: true, data: created });
+});
+
+// List
+r.get('/', (req, res) => {
+  const q = parse(QueryListSchema, req.query || {});
+  if (!q.ok) return res.status(400).json({ ok: false, error: q.error });
+  res.json({ ok: true, data: listSchedules(q.data) });
+});
+
+// Get one
+r.get('/:id', (req, res) => {
+  const s = getSchedule(req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  res.json({ ok: true, data: s });
+});
+
+// Patch
+r.patch('/:id', (req, res) => {
+  const v = parse(SchedulePatchSchema, req.body || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  const updated = patchSchedule(req.params.id, v.data);
+  if (!updated) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+
+  // if cadence/enabled changed, refresh this runner
+  stopCron(updated.id);
+  startRunnerFor(updated);
+  res.json({ ok: true, data: updated });
+});
+
+// Delete
+r.delete('/:id', (req, res) => {
+  const s = getSchedule(req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  stopCron(s.id);
+  deleteSchedule(s.id);
+  res.json({ ok: true, data: { id: s.id, deleted: true } });
+});
+
+// Logs
+r.get('/:id/logs', (req, res) => {
+  const s = getSchedule(req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: { message: 'not_found' } });
+  const limit = Math.min(Number(req.query.limit || 50) || 50, 200);
+  res.json({ ok: true, data: getLogs(s.id, limit) });
+});
+
+// Reload all runners (admin)
+r.post('/_reload', (_req, res) => {
+  refreshRunners();
+  res.json({ ok: true, data: { reloaded: true } });
+});
+
+export default r;
+
+README.md
+md
+# content-scheduler
+
+Lightweight scheduler that triggers your own webhooks with persona payloads on a cron or “every X minutes/hours” cadence. No external site automation here — just timed webhook delivery.
+
+## Env
+- AUTH_BEARER_TOKEN (default: `sched_token_123`)
+- PORT (default 3000)
+
+## Run
+npm run dev
+
+## Health (no auth)
+curl -s https://<your-repl>.replit.app/api/v1/health | jq .
+
+## Auth
+Send header: `Authorization: Bearer sched_token_123`
+
+## Create a schedule (every 30 minutes)
+curl -s -X POST https://<your-repl>.replit.app/api/v1/schedules \
+  -H "Authorization: Bearer sched_token_123" -H "Content-Type: application/json" \
+  -d '{
+    "personaId":"p_123",
+    "channel":"generic",
+    "webhookUrl":"https://example.com/hook",
+    "payload":{"msg":"hello world"},
+    "cadence":{"kind":"every","unit":"minutes","value":30},
+    "enabled":true
+  }'
+
+## Create a cron schedule (every day 14:05 UTC)
+curl -s -X POST https://<your-repl>.replit.app/api/v1/schedules \
+  -H "Authorization: Bearer sched_token_123" -H "Content-Type: application/json" \
+  -d '{
+    "personaId":"writer01",
+    "channel":"generic",
+    "webhookUrl":"https://example.com/hook",
+    "payload":{"topic":"daily post"},
+    "cadence":{"kind":"cron","expr":"5 14 * * *"},
+    "enabled":true
+  }'
+
+## Inspect
+curl -s -H "Authorization: Bearer sched_token_123" https://<your-repl>.replit.app/api/v1/schedules | jq .
+curl -s -H "Authorization: Bearer sched_token_123" https://<your-repl>.replit.app/api/v1/schedules/<id> | jq .
+curl -s -H "Authorization: Bearer sched_token_123" https://<your-repl>.replit.app/api/v1/schedules/<id>/logs | jq .
+
+## Update or disable
+curl -s -X PATCH https://<your-repl>.replit.app/api/v1/schedules/<id> \
+  -H "Authorization: Bearer sched_token_123" -H "Content-Type: application/json" \
+  -d '{"enabled":false}'

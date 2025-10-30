@@ -1,0 +1,102 @@
+(node:1275) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/workspace/server.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/runner/workspace/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+account-intake listening on :3000
+AVAILABLE_ROUTES
+DELETE /api/v1/accounts/:id
+DELETE /api/v1/proxies/:id
+DELETE /api/v1/vaults/:id
+GET    /api/v1/accounts
+GET    /api/v1/accounts/:id
+GET    /api/v1/health
+GET    /api/v1/n8n/get/:id
+GET    /api/v1/proxies
+GET    /api/v1/proxies/:id
+GET    /api/v1/vaults
+GET    /api/v1/vaults/:id
+PATCH  /api/v1/accounts/:id
+PATCH  /api/v1/proxies/:id
+PATCH  /api/v1/vaults/:id
+POST   /api/v1/accounts
+POST   /api/v1/n8n/activate/:id
+POST   /api/v1/n8n/create
+POST   /api/v1/proxies
+POST   /api/v1/vaults
+READY
+[BUILD] Calling create URL: http://127.0.0.1:3000/api/v1/n8n/create
+[BUILD] With bearer: builder_token_123
+[BUILD] With payload: {
+  "name": "Generated Workflow",
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "id": "Sched",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "unit": "minutes",
+              "value": 30
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {}
+}
+POST /api/v1/n8n/create 200 359 - 2.655 ms
+[BUILD] Create response: {
+  "ok": true,
+  "status": 200,
+  "data": {
+    "ok": true,
+    "data": {
+      "id": "wf_s4iv2q86",
+      "created": true,
+      "workflow": {
+        "name": "Generated Workflow",
+        "settings": {
+          "timezone": "UTC"
+        },
+        "nodes": [
+          {
+            "id": "Sched",
+            "name": "Schedule Trigger",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.1,
+            "position": [
+              200,
+              300
+            ],
+            "parameters": {
+              "triggerTimes": {
+                "item": [
+                  {
+                    "mode": "everyX",
+                    "unit": "minutes",
+                    "value": 30
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "connections": {}
+      }
+    }
+  }
+}
+POST /api/v1/n8n/activate 200 56 - 1.348 ms
+POST /api/v1/build 200 444 - 114.889 ms

@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "type": "claude.patch",
+  "file_path": "test_sample.py",
+  "backup_path": "test_sample.py.backup",
+  "lines_changed": 4,
+  "diff_summary": "--- test_sample.py (original)+++ test_sample.py (patched)@@ -1,5 +1,7 @@ # Sample file for testing patches\n def calculate(a, b):\n+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):\n+        raise TypeError(\"Inputs must be numbers\")\n     return a + b\n \n result = calculate(5, 3)\n",
+  "model": "claude-3-5-sonnet-20241022",
+  "usage": {
+    "input_tokens": 121,
+    "output_tokens": 78
+  },
+  "test_result": {
+    "ok": true,
+    "type": "deploy.test",
+    "endpoint": "http://localhost:5000/api/v1/health",
+    "method": "GET",
+    "status_code": 200,
+    "response": {
+      "ok": true,
+      "db": "ok",
+      "time": "2025-10-24T21:28:46.195780"
+    },
+    "headers": {
+      "date": "Fri, 24 Oct 2025 21:28:46 GMT",
+      "server": "uvicorn",
+      "content-length": "57",
+      "content-type": "application/json",
+      "x-request-id": "73242aa0-daf7-467d-b536-b8079e9fe391"
+    }
+  },
+  "test_passed": true,
+  "telegram_sent": true,
+  "task_id": "patch_test_001",
+  "duration_seconds": 1.965,
+  "completed_at": "2025-10-24T21:28:46.756874Z",
+  "original_task": {
+    "type": "claude.patch",
+    "file_path": "test_sample.py",
+    "prompt": "Add error handling to the calculate function to check if inputs are numbers",
+    "test_endpoint": "http://localhost:5000/api/v1/health",
+    "chat_id": "7484907544",
+    "id": "patch_test_001",
+    "enqueued_at": "2025-10-24T21:28:44.682398Z"
+  },
+  "tokens_used": 199
+}

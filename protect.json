@@ -1,0 +1,33 @@
+{
+  "protected_files": [
+    "budgets.json",
+    "package.json",
+    "package-lock.json",
+    "requirements.txt",
+    "main.py",
+    "app/main.py",
+    "app/config.py",
+    "app/security.py",
+    "app/db.py",
+    ".env",
+    ".env.local",
+    "replit.nix",
+    ".replit",
+    "Dockerfile",
+    "docker-compose.yml",
+    "app/models.py",
+    "app/models_*.py",
+    "common/telegram.py",
+    "manus/main.py",
+    "sdk/runner.py"
+  ],
+  "protected_patterns": [
+    "*.key",
+    "*.pem",
+    "*.crt",
+    "**/migrations/**",
+    "**/secrets/**",
+    ".git/**"
+  ],
+  "description": "Critical files that require explicit approval before modification"
+}

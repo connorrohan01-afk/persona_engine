@@ -1,0 +1,62 @@
+Publish + Verify Telegram Bot (end-to-end)
+
+GOAL
+Make this Repl’s Telegram bot live and confirmed working. Automate everything that can be automated; give me one small, explicit manual step if needed.
+
+CHECK WE’RE IN THE RIGHT REPL
+1) Show me:
+   - current working directory (pwd)
+   - the .replit file contents (if present)
+   - env vars TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT, ANTHROPIC_API_KEY, PUBLIC_URL (mask secrets except 4 leading + 3 trailing chars)
+2) Print the exact PUBLIC_URL value. It must look like:
+   https://e82c6963-9ea7-49d1-aebd-cb19bfeaddc8-00-7tpacau3585r.janeway.replit.dev
+   If it doesn’t, stop and tell me.
+
+LOCAL SANITY
+3) Ensure dependencies are declared:
+   - Create/overwrite requirements.txt with the libs used by the app (fastapi, uvicorn, pydantic, requests, python-dotenv or any imports found).
+4) Ensure run command:
+   - If missing, write a startup script `start.sh` that runs:
+     python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+     (make it executable)
+5) Start/Restart the local app and confirm:
+   - curl -s http://localhost:$PORT/api/v1/health → expect JSON with {"ok": true}
+
+DEPLOYMENT CHECKLIST (UI-ONLY PART)
+6) Output ONE clear block for me to copy into the **Deployment** env (not workspace):
+   TELEGRAM_BOT_TOKEN=<FULL>
+   CHAT_ID_DEFAULT=<FULL>
+   ANTHROPIC_API_KEY=<FULL>
+   PUBLIC_URL=<FULL>
+7) Output the exact deployment settings I must use:
+   - Type: Autoscale
+   - Build: pip install -r requirements.txt
+   - Run:  python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+Then say: “Click Publish. When status is Running, reply: published”
+
+POST-PUBLISH AUTOMATION (run after I reply “published”)
+8) Reset webhook: `python tools/reset_webhook.py`
+   - Show result (pending_updates, max_connections, last_error).
+9) Health (public): `curl -sv $PUBLIC_URL/api/v1/health`
+10) End-to-end tests:
+    a) Send a POST to the bot’s ingress (your app) to simulate Telegram /ping:
+       POST $PUBLIC_URL/api/v1/telegram/$TELEGRAM_BOT_TOKEN
+       body: {"message":{"chat":{"id": CHAT_ID_DEFAULT},"text":"/ping"}}
+       Show HTTP status + body.
+    b) Repeat for: {"message":{"chat":{"id": CHAT_ID_DEFAULT},"text":"/build read test_sample.py"}}
+       Show HTTP status + body.
+
+DIAGNOSTICS ON FAILURE
+11) If any step fails, print:
+    - failing command, HTTP code + first 300 chars of body
+    - last 200 lines of app logs (if accessible)
+    - current webhook info from Telegram (pending updates, last_error)
+    - a 1-paragraph fix plan
+
+FINISH
+12) Output a short PASS/FAIL summary with:
+    - local health ✔/✖
+    - public health ✔/✖
+    - webhook ✔/✖
+    - /ping response seen ✔/✖
+    - /build read test_sample.py result ✔/✖

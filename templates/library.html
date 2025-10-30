@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+
+{% block title %}Content Library - Content Automation Platform{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-folder me-2"></i>Content Library
+        </h1>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <form method="GET" class="row g-3">
+                    <div class="col-md-4">
+                        <label for="status" class="form-label">Status</label>
+                        <select class="form-select" id="status" name="status">
+                            <option value="all" {% if current_status == 'all' %}selected{% endif %}>All Statuses</option>
+                            {% for status in statuses %}
+                            <option value="{{ status }}" {% if current_status == status %}selected{% endif %}>
+                                {{ status.title() }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="platform" class="form-label">Platform</label>
+                        <select class="form-select" id="platform" name="platform">
+                            <option value="all" {% if current_platform == 'all' %}selected{% endif %}>All Platforms</option>
+                            {% for platform in platforms %}
+                            <option value="{{ platform }}" {% if current_platform == platform %}selected{% endif %}>
+                                {{ platform.title() }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="fas fa-filter me-2"></i>Filter
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Content List -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-list me-2"></i>Content Items
+                </h5>
+                <a href="{{ url_for('generate_page') }}" class="btn btn-primary">
+                    <i class="fas fa-plus me-2"></i>New Content
+                </a>
+            </div>
+            <div class="card-body">
+                {% if content_items.items %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Title</th>
+                                    <th>Platform</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Scheduled</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for content in content_items.items %}
+                                <tr>
+                                    <td>
+                                        <div class="content-title" data-bs-toggle="tooltip" 
+                                             title="{{ content.content[:100] }}...">
+                                            {{ content.title }}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ content.platform.title() }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% set status_colors = {
+                                            'draft': 'secondary',
+                                            'scheduled': 'warning',
+                                            'published': 'success',
+                                            'failed': 'danger'
+                                        } %}
+                                        <span class="badge bg-{{ status_colors.get(content.status, 'secondary') }}">
+                                            {{ content.status.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ content.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>
+                                        {% if content.scheduled_for %}
+                                            {{ content.scheduled_for.strftime('%Y-%m-%d %H:%M') }}
+                                        {% else %}
+                                            <span class="text-muted">-</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <button class="btn btn-outline-primary" 
+                                                    data-bs-toggle="modal" 
+                                                    data-bs-target="#viewModal"
+                                                    data-content="{{ content.content }}"
+                                                    data-title="{{ content.title }}">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <a href="{{ url_for('edit_content', content_id=content.id) }}" 
+                                               class="btn btn-outline-secondary">
+                                                <i class="fas fa-edit"></i>
+                                            </a>
+                                            {% if content.status == 'scheduled' %}
+                                            <button class="btn btn-outline-warning cancel-schedule-btn"
+                                                    data-content-id="{{ content.id }}">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+                                            {% elif content.status == 'draft' %}
+                                            <button class="btn btn-outline-success schedule-btn"
+                                                    data-content-id="{{ content.id }}">
+                                                <i class="fas fa-calendar"></i>
+                                            </button>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Pagination -->
+                    {% if content_items.pages > 1 %}
+                    <nav aria-label="Content pagination">
+                        <ul class="pagination justify-content-center">
+                            {% if content_items.has_prev %}
+                            <li class="page-item">
+                                <a class="page-link" href="{{ url_for('library', page=content_items.prev_num, status=current_status, platform=current_platform) }}">
+                                    Previous
+                                </a>
+                            </li>
+                            {% endif %}
+                            
+                            {% for page_num in content_items.iter_pages() %}
+                                {% if page_num %}
+                                    {% if page_num != content_items.page %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="{{ url_for('library', page=page_num, status=current_status, platform=current_platform) }}">
+                                            {{ page_num }}
+                                        </a>
+                                    </li>
+                                    {% else %}
+                                    <li class="page-item active">
+                                        <span class="page-link">{{ page_num }}</span>
+                                    </li>
+                                    {% endif %}
+                                {% else %}
+                                <li class="page-item disabled">
+                                    <span class="page-link">...</span>
+                                </li>
+                                {% endif %}
+                            {% endfor %}
+                            
+                            {% if content_items.has_next %}
+                            <li class="page-item">
+                                <a class="page-link" href="{{ url_for('library', page=content_items.next_num, status=current_status, platform=current_platform) }}">
+                                    Next
+                                </a>
+                            </li>
+                            {% endif %}
+                        </ul>
+                    </nav>
+                    {% endif %}
+                {% else %}
+                    <div class="text-center py-5">
+                        <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+                        <h5>No content found</h5>
+                        <p class="text-muted">
+                            {% if current_status != 'all' or current_platform != 'all' %}
+                                No content matches your current filters. Try adjusting the filters or create new content.
+                            {% else %}
+                                Start by generating your first piece of content!
+                            {% endif %}
+                        </p>
+                        <a href="{{ url_for('generate_page') }}" class="btn btn-primary">
+                            <i class="fas fa-magic me-2"></i>Generate Content
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- View Content Modal -->
+<div class="modal fade" id="viewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Content Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <h6 class="fw-bold" id="modalTitle"></h6>
+                <div id="modalContent" class="mt-3"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Schedule Modal -->
+<div class="modal fade" id="scheduleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Schedule Content</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="scheduleForm">
+                    <div class="mb-3">
+                        <label for="scheduleDateTime" class="form-label">Schedule Date & Time</label>
+                        <input type="datetime-local" class="form-control" id="scheduleDateTime" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmSchedule">Schedule</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize tooltips
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+    
+    // View content modal
+    const viewModal = document.getElementById('viewModal');
+    viewModal.addEventListener('show.bs.modal', function (event) {
+        const button = event.relatedTarget;
+        const title = button.getAttribute('data-title');
+        const content = button.getAttribute('data-content');
+        
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalContent').innerHTML = content.replace(/\n/g, '<br>');
+    });
+    
+    // Schedule buttons
+    document.querySelectorAll('.schedule-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const contentId = this.dataset.contentId;
+            document.getElementById('confirmSchedule').dataset.contentId = contentId;
+            new bootstrap.Modal(document.getElementById('scheduleModal')).show();
+        });
+    });
+    
+    // Cancel schedule buttons
+    document.querySelectorAll('.cancel-schedule-btn').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const contentId = this.dataset.contentId;
+            
+            if (confirm('Are you sure you want to cancel the scheduled post?')) {
+                try {
+                    const response = await fetch(`/api/cancel-schedule/${contentId}`, {
+                        method: 'POST'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showAlert('Schedule cancelled successfully!', 'success');
+                        location.reload();
+                    } else {
+                        showAlert('Error cancelling schedule: ' + result.error, 'danger');
+                    }
+                } catch (error) {
+                    showAlert('Network error: ' + error.message, 'danger');
+                }
+            }
+        });
+    });
+    
+    // Schedule confirmation
+    document.getElementById('confirmSchedule').addEventListener('click', async function() {
+        const contentId = this.dataset.contentId;
+        const scheduleDateTime = document.getElementById('scheduleDateTime').value;
+        
+        if (!scheduleDateTime) {
+            showAlert('Please select a date and time', 'warning');
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/schedule-content', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content_id: contentId,
+                    scheduled_time: new Date(scheduleDateTime).toISOString()
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                showAlert('Content scheduled successfully!', 'success');
+                bootstrap.Modal.getInstance(document.getElementById('scheduleModal')).hide();
+                location.reload();
+            } else {
+                showAlert('Error scheduling content: ' + result.error, 'danger');
+            }
+        } catch (error) {
+            showAlert('Network error: ' + error.message, 'danger');
+        }
+    });
+});
+</script>
+{% endblock %}

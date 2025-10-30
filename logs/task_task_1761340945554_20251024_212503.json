@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "error": "protected_file_write_blocked",
+  "message": "Cannot write to protected file: budgets.json",
+  "file_path": "budgets.json",
+  "requires_approval": false,
+  "hint": "Add 'requires_approval': true to task to override protection",
+  "task_id": "task_1761340945554",
+  "duration_seconds": 0.001,
+  "completed_at": "2025-10-24T21:25:03.377909Z",
+  "original_task": {
+    "type": "claude.patch",
+    "file_path": "budgets.json",
+    "prompt": "Increase daily cap to $20",
+    "current_code": "{}",
+    "id": "task_1761340945554",
+    "enqueued_at": "2025-10-24T21:22:25.554932Z"
+  },
+  "tokens_used": 0
+}

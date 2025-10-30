@@ -1,0 +1,15 @@
+{
+  "name": "telegram-command-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

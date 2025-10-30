@@ -1,0 +1,28 @@
+Diagnose and fix why my Telegram bot isn’t responding. Local FastAPI works (GET http://localhost:5000/api/v1/health → {"ok":true}) but the public URL returns 502/“couldn’t reach this app”.
+
+Do all of the following automatically:
+	1.	Find deployment + public URL
+	•	Detect the current Autoscale deployment and its public URL. Confirm it matches the PUBLIC_URL env/secret. If PUBLIC_URL differs, update the deployment secret to the exact public hostname (e.g. https://…replit.dev) — no trailing slash.
+	2.	Verify build/run + redeploy
+	•	Build command: pip install -r requirements.txt
+	•	Run command: python -m uvicorn app.server:app --host 0.0.0.0 --port $PORT
+	•	If the deployment is missing, misconfigured, or unhealthy, create/repair it and redeploy.
+	3.	Sync deployment secrets (NOT just workspace env vars)
+	•	Ensure these are set in the deployment:
+TELEGRAM_BOT_TOKEN, CHAT_ID_DEFAULT (or TELEGRAM_CHAT_ID), ANTHROPIC_API_KEY, PUBLIC_URL (exact public URL).
+	•	Copy the full values from the workspace if needed. Do not mask in the deployment.
+	4.	Health check (public)
+	•	GET $PUBLIC_URL/api/v1/health → expect {"ok": true}.
+	•	If not OK, fetch the last 200 lines of deployment logs, identify the root cause (import error, port binding, missing deps, etc.), fix it, and redeploy until healthy.
+	5.	Reset Telegram webhook to public URL
+	•	Run: python tools/reset_webhook.py
+	•	Confirm getWebhookInfo shows no errors and Pending updates: 0.
+	6.	End-to-end test
+	•	POST to $PUBLIC_URL/api/v1/telegram/$TELEGRAM_BOT_TOKEN with JSON:
+{"message":{"chat":{"id":$CHAT_ID_DEFAULT},"text":"/ping"}} → expect {"ok":true}.
+	•	From Telegram, send /ping and /build read test_sample.py.
+	•	Paste the server logs showing both were handled.
+	7.	Report
+	•	Summarize what was wrong, what you changed, and the final verification (public health OK, webhook OK, Telegram replies visible).
+
+If the UI doesn’t show a Publish button but the deployment exists and is unhealthy, open Deployments → current Autoscale deployment → Redeploy with the commands/secrets above.

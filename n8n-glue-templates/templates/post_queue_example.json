@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=${POSTER_URL}/api/v1/queue",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"accountId\":\"acc_123\", \"subreddit\":\"r/pics\", \"text\":\"hello world\" }",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name":"Authorization", "value":"=Bearer ${POSTER_TOKEN}" }, { "name":"Content-Type", "value":"application/json" } ] }
+      },
+      "id": "post-queue",
+      "name": "Poster: Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 200, 200 ]
+    }
+  ],
+  "connections": {}
+}

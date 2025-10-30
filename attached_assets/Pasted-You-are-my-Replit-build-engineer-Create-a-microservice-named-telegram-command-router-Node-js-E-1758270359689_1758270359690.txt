@@ -1,0 +1,112 @@
+You are my Replit build engineer. Create a microservice named "telegram-command-router" (Node.js + Express) that receives Telegram bot webhooks, parses commands, enforces light rate-limits, and fan-out calls to my internal microservices (content, vaults, intake, scheduler, poster). This service MUST NOT automate third-party sites directly; it only routes/validates and calls my own internal HTTP services with a Bearer token.
+
+GOALS (must follow)
+- Node 18+, Express, helmet, morgan, express-rate-limit, node-telegram-bot-api (for signature verification utilities only; all HTTP via Express).
+- Endpoints under /api/v1:
+  - POST /telegram/webhook  (no auth; Telegram calls this)
+  - GET  /health            (no auth)
+- Commands supported from chat messages (case-insensitive):
+  - /ping → respond “pong”
+  - /status → quick OK + service pings to downstream SERVICE_* targets
+  - /link <accountId> → store chat↔account mapping in memory map
+  - /post <accountId> <subreddit> :: <text> → call POSTER_URL /api/v1/queue with JSON
+  - /schedule <accountId> every <N> <unit> :: <subreddit> :: <text> → call SCHEDULER_URL /api/v1/jobs
+  - /media <accountId> :: <prompt or url> → call CONTENT_URL to request an image, then POSTER_URL to queue (text fallback if image failed)
+  - /help → list commands
+- Config via env (document in README; safe defaults where possible):
+  - TELEGRAM_BOT_TOKEN (required)
+  - TELEGRAM_BOT_USERNAME (optional, improves command parsing)
+  - AUTH_BEARER_TOKEN (default: tg_router_token_123) — used when calling internal services
+  - CONTENT_URL, INTAKE_URL, POSTER_URL, SCHEDULER_URL, VAULTS_URL (internal HTTP base URLs; optional for first boot)
+  - RATE_LIMIT_WINDOW_MS=30000, RATE_LIMIT_MAX=20
+  - PORT=3000
+- Security:
+  - Validate that incoming update JSON has a message/chat; ignore anything else.
+  - Simple per-chat rate-limit using express-rate-limit keyGenerator(chat.id).
+  - When calling downstream internal services, always send Authorization: Bearer <AUTH_BEARER_TOKEN>.
+- Behavior:
+  - Robust command parsing (support “::” separators) and graceful errors back to Telegram.
+  - Maintain an in-memory Map<chatId, { accountId, lastSeen, meta? }>.
+  - Log every command as a one-line JSON: {ts, chatId, user, cmd, args, ok, err?}.
+  - On boot, print AVAILABLE_ROUTES and READY.
+- Structure / files to create and fully implement:
+  - package.json (exact below)
+  - server.js
+  - src/lib/parse.js        (command parsing + helpers)
+  - src/lib/downstream.js   (fetch wrapper with bearer + baseUrl getters)
+  - src/lib/store.js        (in-memory maps for links)
+  - src/routes/telegram.js  (webhook handler)
+  - README.md
+
+package.json (exact)
+{
+  "name": "telegram-command-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.2.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
+
+server.js (implement)
+- Boot Express on PORT (default 3000)
+- Use helmet, morgan('tiny'), express.json({limit:'1mb'})
+- Global rate limit: RATE_LIMIT_MAX per RATE_LIMIT_WINDOW_MS (defaults 20 / 30s)
+- Mount:
+  - GET  /api/v1/health → { ok:true, data:{ service:"telegram-command-router" } }
+  - POST /api/v1/telegram/webhook → from ./src/routes/telegram.js
+- 404 JSON → { ok:false, error:{ message:"not_found" } }
+- On listen: print AVAILABLE_ROUTES and “READY”
+- Export app
+
+src/lib/parse.js
+- export function parseCommand(messageText, botUsername?) → { cmd, argsRaw, parts[], kv?:object }
+  - Support forms:
+    - "/post acc123 r/pics :: hello world"
+    - "post acc123 pics :: hello"
+    - "/schedule acc123 every 30 minutes :: pics :: hi"
+  - Normalize subreddit with/without "r/".
+  - Return null if nothing parseable.
+
+src/lib/downstream.js
+- Small wrapper export async function call(serviceEnvName, path, {method='POST', json}={}):
+  - base = process.env[serviceEnvName] (e.g., POSTER_URL) or return {ok:false,error:'unconfigured'}
+  - fetch(base + path, { method, headers:{ Authorization:`Bearer ${AUTH_BEARER_TOKEN}`, 'Content-Type':'application/json' }, body: json? JSON.stringify(json):undefined })
+  - Return parsed JSON or {ok:false,error} on failure.
+- Helper getters for CONTENT_URL, POSTER_URL, SCHEDULER_URL, INTAKE_URL, VAULTS_URL.
+
+src/lib/store.js
+- export const links = new Map(); // chatId → { accountId, lastSeen, meta? }
+- export function linkChat(chatId, accountId) { links.set(chatId, { accountId, lastSeen: Date.now() }); return links.get(chatId); }
+- export function getLink(chatId) { return links.get(chatId) || null; }
+
+src/routes/telegram.js
+- Expose router.post('/telegram/webhook', async (req,res)=>{...})
+- Extract chatId, username, text; call parseCommand()
+- Commands:
+  - ping/status/help → immediate text replies
+  - link <accId> → store link; reply “linked”
+  - post <accId?> <sub> :: <text> → if no accId, try linked one; call call('POSTER_URL','/api/v1/queue', { accountId, subreddit, text })
+  - schedule <accId> every N unit :: <sub> :: <text> → call call('SCHEDULER_URL','/api/v1/jobs', { ... })
+  - media <accId> :: <promptOrUrl> → if contains http(s), treat as imageUrl; else call CONTENT_URL /api/v1/images to synth; then queue to POSTER
+- For any error, reply with a short reason.
+
+README.md
+- Document env vars, how to set the Telegram webhook (curl), sample bodies, and examples:
+  - /ping
+  - /link acc123
+  - /post acc123 r/pics :: hello
+  - /schedule acc123 every 30 minutes :: r/pics :: hi
+- Note: This router only talks to YOUR internal services with a Bearer token and never automates third-party sites directly.
+
+Finish by printing:
+1) READY
+2) AVAILABLE_ROUTES (each METHOD path)
+3) Example curl to /health
